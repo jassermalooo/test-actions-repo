@@ -77,12 +77,15 @@ jobs:
 
           # Append hardware settings
           printf '%s\n' \
-            'hw.ramSize=3072' \
+            'hw.ramSize=4096' \
             'hw.cpu.ncore=2' \
             'hw.gpu.enabled=yes' \
             'hw.gpu.mode=swiftshader_indirect' \
-            'vm.heapSize=512' \
+            'vm.heapSize=1024' \
             'hw.keyboard=yes' \
+            'hw.lcd.width=1080' \
+            'hw.lcd.height=1920' \
+            'hw.lcd.density=420' \
             >> "$AVD_CFG"
 
           echo "AVD created at: $AVD_DIR"
@@ -108,8 +111,8 @@ jobs:
           emulator -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
             -gpu swiftshader_indirect \
-            -memory 3072 -cores 2 \
-            -no-window -accel on \
+            -memory 4096 -cores 2 \
+            -accel on \
             -netdelay none -netspeed full \
             > /tmp/emu.log 2>&1 &
           EMULATOR_PID=$!
