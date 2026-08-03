@@ -1,0 +1,134 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure RDP Settings
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Rule" | Out-Null
+          netsh advfirewall firewall add rule name="RDP-Rule" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Disable Password Complexity and Create RDP User
+        shell: powershell
+        run: |
+          $cfgPath = "$env:TEMP\secpol.cfg"
+          $dbPath  = "$env:TEMP\secedit.sdb"
+          secedit /export /cfg $cfgPath
+          $content = Get-Content $cfgPath -Encoding Unicode
+          $content = $content -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0'
+          $content = $content -replace 'MinimumPasswordLength = \d+', 'MinimumPasswordLength = 0'
+          $content | Set-Content $cfgPath -Encoding Unicode
+          secedit /configure /db $dbPath /cfg $cfgPath /areas SECURITYPOLICY /quiet
+          gpupdate /force | Out-Null
+          net user RDP 12345 /add
+          net localgroup Administrators RDP /add
+          net localgroup "Remote Desktop Users" RDP /add
+          Write-Host "User: RDP | Password: 12345"
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $p = "$env:TEMP\ts.msi"
+          Invoke-WebRequest -Uri $url -OutFile $p -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i","`"$p`"","/quiet","/norestart" -Wait
+          Remove-Item $p -Force
+
+      - name: Connect Tailscale
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-$env:GITHUB_RUN_ID
+          $ip = $null
+          for ($i = 0; $i -lt 15; $i++) {
+            $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null) | Select-Object -First 1
+            if ($ip) { break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ip) { Write-Error 'Tailscale IP not assigned'; exit 1 }
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $ip"
+
+      - name: Install VS Code + Git + JDK + Flutter + Android SDK
+        shell: powershell
+        run: |
+          Write-Host "Installing tools via Chocolatey..."
+          choco install vscode git temurin17 flutter android-sdk -y --no-progress 2>&1 | `
+            Where-Object { $_ -match "(installed|upgraded|already|Error)" }
+          refreshenv
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + `
+                      [System.Environment]::GetEnvironmentVariable("PATH","User")
+          Write-Host "Checking Flutter..."
+          flutter --version 2>&1 | Select-Object -First 2
+          Write-Host "All tools installed"
+
+      - name: Accept Android Licenses
+        shell: powershell
+        run: |
+          refreshenv
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + `
+                      [System.Environment]::GetEnvironmentVariable("PATH","User")
+          $sdkManager = (Get-Command sdkmanager -ErrorAction SilentlyContinue)?.Source
+          if ($sdkManager) {
+            "y`ny`ny`ny`ny`ny" | & $sdkManager --licenses 2>&1 | Out-Null
+            & $sdkManager "platform-tools" "platforms;android-35" "build-tools;35.0.0" 2>&1 | Out-Null
+            Write-Host "Android licenses accepted"
+          } else {
+            Write-Host "sdkmanager not found, skipping"
+          }
+          "y`ny`ny`ny" | flutter doctor --android-licenses 2>&1 | Out-Null
+          flutter doctor 2>&1 | Select-Object -First 20
+
+      - name: Install VS Code Extensions
+        shell: powershell
+        run: |
+          $paths = @(
+            "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
+            "C:\Program Files\Microsoft VS Code\bin\code.cmd"
+          )
+          $code = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($code) {
+            & $code --install-extension Dart-Code.flutter --force 2>&1 | Out-Null
+            & $code --install-extension Dart-Code.dart-code --force 2>&1 | Out-Null
+            Write-Host "Flutter + Dart extensions installed in VS Code"
+          } else {
+            Write-Host "VS Code not found, skipping extensions"
+          }
+
+      - name: Install BlueStacks
+        shell: powershell
+        run: |
+          Write-Host "Installing BlueStacks via Chocolatey..."
+          choco install bluestacks -y --no-progress 2>&1 | `
+            Where-Object { $_ -match "(installed|upgraded|already|Error)" }
+          Write-Host "BlueStacks installed - find it in Start Menu after RDP login"
+
+      - name: Show Connection Info
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "  RDP IP    : $env:TAILSCALE_IP"
+          Write-Host "  User      : RDP"
+          Write-Host "  Password  : 12345"
+          Write-Host "  VS Code   : Start Menu > Visual Studio Code"
+          Write-Host "  Flutter   : ready in terminal"
+          Write-Host "  BlueStacks: Start Menu > BlueStacks"
+          Write-Host "=========================================="
+
+      - name: Keep Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active - $env:TAILSCALE_IP"
+            Start-Sleep -Seconds 300
+          }
+

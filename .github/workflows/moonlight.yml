@@ -1,0 +1,93 @@
+name: Moonlight-Sunshine
+
+on:
+  workflow_dispatch:
+
+jobs:
+  moonlight-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Install Sunshine
+        run: |
+          $apiUrl = "https://api.github.com/repos/LizardByte/Sunshine/releases/latest"
+          $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
+          $asset = $release.assets | Where-Object { $_.name -like "Sunshine-Windows-AMD64-installer.exe" } | Select-Object -First 1
+          if (-not $asset) { Write-Error "Sunshine installer not found"; exit 1 }
+          $installerPath = "$env:TEMP\sunshine-installer.exe"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installerPath -UseBasicParsing
+          Start-Process $installerPath -ArgumentList "/S" -Wait
+          Start-Sleep -Seconds 10
+          Write-Host "Sunshine installed"
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale and get IP
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=sunshine-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          for ($i = 0; $i -lt 15; $i++) {
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            if ($tsIP) { break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $tsIP) { Write-Error "Tailscale IP not assigned"; exit 1 }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
+
+      - name: Write Sunshine config (with CSRF fix)
+        env:
+          SUNSHINE_PASSWORD: ${{ secrets.SUNSHINE_PASSWORD }}
+        run: |
+          $origin = "https://$env:TAILSCALE_IP:47990"
+          $configDir = "$env:LOCALAPPDATA\Sunshine\config"
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          $configPath = "$configDir\sunshine.conf"
+          "username=admin" | Set-Content -Path $configPath -Encoding UTF8
+          "password=$env:SUNSHINE_PASSWORD" | Add-Content -Path $configPath -Encoding UTF8
+          "origin_web_ui_allowed=wan" | Add-Content -Path $configPath -Encoding UTF8
+          "csrf_allowed_origins=$origin" | Add-Content -Path $configPath -Encoding UTF8
+          Write-Host "Config written to: $configPath"
+          Write-Host "CSRF origin set to: $origin"
+          Get-Content $configPath
+
+      - name: Start Sunshine
+        run: |
+          $paths = @(
+            "C:\Program Files\Sunshine\sunshine.exe",
+            "C:\Program Files (x86)\Sunshine\sunshine.exe"
+          )
+          $exe = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { Write-Error "Sunshine not found"; exit 1 }
+          Start-Process $exe -WindowStyle Hidden
+          Write-Host "Waiting for Sunshine web server..."
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              Invoke-WebRequest -Uri "https://localhost:47990" -SkipCertificateCheck -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
+              Write-Host "Sunshine is ready!"; break
+            } catch { Start-Sleep -Seconds 2 }
+          }
+
+      - name: Show Connection Info
+        run: |
+          Write-Host "================================================"
+          Write-Host "  Moonlight + Sunshine READY!"
+          Write-Host "  Moonlight IP  : $env:TAILSCALE_IP"
+          Write-Host "  Sunshine UI   : https://$env:TAILSCALE_IP:47990"
+          Write-Host "  Username      : admin"
+          Write-Host "  Password      : 12345"
+          Write-Host "================================================"
+
+      - name: Keep Alive
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active - IP: $env:TAILSCALE_IP"
+            Start-Sleep -Seconds 300
+          }

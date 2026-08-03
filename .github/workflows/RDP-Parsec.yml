@@ -1,0 +1,75 @@
+name: RDP-Parsec
+
+on:
+  workflow_dispatch:
+
+jobs:
+  parsec-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 2
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          Write-Host "User: RDP | Password: $password"
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Install Parsec
+        run: |
+          $parsecUrl = "https://builds.parsec.app/package/parsec-windows.exe"
+          $installerPath = "$env:TEMP\parsec-windows.exe"
+          Invoke-WebRequest -Uri $parsecUrl -OutFile $installerPath
+          Start-Process $installerPath -ArgumentList "/silent" -Wait
+          Start-Sleep -Seconds 15
+
+      - name: Connect Parsec
+        run: |
+          $parsecd = Get-ChildItem -Path "C:\Program Files\Parsec","C:\Program Files (x86)\Parsec" -Filter "parsecd.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($parsecd) {
+              Start-Process $parsecd.FullName -ArgumentList "app_host=1 team_id=${{ secrets.PARSEC_TEAM_KEY }}"
+          } else {
+              Write-Error "Parsec not found"; exit 1
+          }
+          Start-Sleep -Seconds 20
+
+      - name: Show Connection Info
+        run: |
+          Write-Host "=========================================="
+          Write-Host "  Parsec is running!"
+          Write-Host "  Open Parsec app on your device"
+          Write-Host "  and connect to this machine."
+          Write-Host "  RDP User: RDP"
+          Write-Host "  RDP Pass: $env:RDP_PASSWORD"
+          Write-Host "=========================================="
+
+      - name: Keep Alive
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session Active"
+              Start-Sleep -Seconds 300
+          }
