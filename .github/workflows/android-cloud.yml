@@ -47,7 +47,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "emulator" \
             "platforms;android-34" \
-            "system-images;android-34;google_apis;x86_64" > /dev/null 2>&1
+            "system-images;android-34;default;x86_64" > /dev/null 2>&1
           echo "Android SDK installed"
 
       - name: Create Android Virtual Device
@@ -58,7 +58,7 @@ jobs:
 
           echo "no" | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             -n android-cloud \
-            -k "system-images;android-34;google_apis;x86_64" \
+            -k "system-images;android-34;default;x86_64" \
             -d pixel_4 --force
 
           # Locate config.ini — avdmanager sometimes places the avd dir elsewhere
@@ -109,6 +109,8 @@ jobs:
             -no-audio -no-snapshot -no-boot-anim \
             -gpu swiftshader_indirect \
             -memory 3072 -cores 2 \
+            -no-window -accel on \
+            -netdelay none -netspeed full \
             > /tmp/emu.log 2>&1 &
           EMULATOR_PID=$!
 
