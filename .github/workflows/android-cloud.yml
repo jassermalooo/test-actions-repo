@@ -146,10 +146,20 @@ jobs:
           nohup /tmp/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 > /tmp/novnc.log 2>&1 &
           sleep 2
 
+
+      - name: Install Ollama + AI Vision Model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          sleep 8
+          echo "Pulling llava-phi3 (vision model, no API needed)..."
+          ollama pull llava-phi3
+          echo "✅ AI model ready:"
+          ollama list
+
       - name: Start Telegram AI Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nohup node .github/scripts/tg-bot.js > /tmp/tg-bot.log 2>&1 &
           sleep 3
@@ -180,7 +190,6 @@ jobs:
             if ! pgrep -f "tg-bot.js" > /dev/null; then
               echo "Bot crashed, restarting..."
               TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-              GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
               nohup node .github/scripts/tg-bot.js >> /tmp/tg-bot.log 2>&1 &
             fi
             sleep 60
