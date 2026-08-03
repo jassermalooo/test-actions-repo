@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Android Cloud Stream</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0d0d0d; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; color:#fff; font-family:Arial; }
+    #status { font-size:14px; color:#4CAF50; margin-bottom:12px; font-weight:bold; }
+    canvas { border:2px solid #333; max-width:100%; max-height:85vh; background:#000; }
+    #info { margin-top:10px; font-size:12px; color:#666; }
+  </style>
+</head>
+<body>
+  <div id="status">🔄 Connecting to Android Cloud...</div>
+  <canvas id="canvas"></canvas>
+  <div id="info">Android 14 | MPEG1/WebSocket Stream | ~80ms latency</div>
+  <script src="/jsmpeg.min.js"></script>
+  <script>
+    const wsUrl = 'ws://' + location.hostname + ':8081';
+    document.getElementById('status').textContent = '🔄 Connecting: ' + wsUrl;
+    const player = new JSMpeg.Player(wsUrl, {
+      canvas: document.getElementById('canvas'),
+      autoplay: true,
+      audio: false,
+      onSourceEstablished: () => {
+        document.getElementById('status').textContent = '✅ Connected — Android 14 Live';
+        document.getElementById('status').style.color = '#4CAF50';
+      },
+      onSourceCompleted: () => {
+        document.getElementById('status').textContent = '❌ Stream ended';
+        document.getElementById('status').style.color = '#f44';
+      }
+    });
+  </script>
+</body>
+</html>
