@@ -11,9 +11,10 @@ jobs:
     steps:
       - name: Enable KVM Acceleration
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node/kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm || true
           echo "KVM ready"
 
       - name: Install Tailscale and Connect
@@ -21,29 +22,29 @@ jobs:
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=android-$GITHUB_RUN_ID
           IP=$(tailscale ip -4)
-          echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+          echo "TAILSCALE_IP=$IP" >> "$GITHUB_ENV"
           echo "Tailscale IP: $IP"
 
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y openjdk-17-jdk wget unzip xvfb fluxbox ffmpeg scrcpy nodejs npm 2>/dev/null || true
+          sudo apt-get install -y openjdk-17-jdk wget unzip xvfb fluxbox ffmpeg scrcpy nodejs npm
           echo "Dependencies installed"
 
       - name: Install Android SDK
         run: |
           export ANDROID_HOME=$HOME/android-sdk
-          mkdir -p $ANDROID_HOME/cmdline-tools
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
           cd /tmp
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q commandlinetools-linux-11076708_latest.zip
-          mv cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          mv cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "emulator" \
             "platforms;android-34" \
             "system-images;android-34;google_apis;x86_64" > /dev/null 2>&1
@@ -52,54 +53,94 @@ jobs:
       - name: Create Android Virtual Device
         run: |
           export ANDROID_HOME=$HOME/android-sdk
-          mkdir -p $HOME/.android/avd
-          echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
+          mkdir -p "$HOME/.android/avd"
+          echo "no" | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             -n android-cloud \
             -k "system-images;android-34;google_apis;x86_64" \
             -d pixel_4 --force
-          AVD_DIR=$HOME/.android/avd/android-cloud.avd
-          mkdir -p "$AVD_DIR"
+          AVD_DIR="$HOME/.android/avd/android-cloud.avd"
           AVD_CFG="$AVD_DIR/config.ini"
-          echo "hw.ramSize=3072"                   >> "$AVD_CFG"
-          echo "hw.cpu.ncore=2"                    >> "$AVD_CFG"
-          echo "hw.gpu.enabled=yes"                >> "$AVD_CFG"
-          echo "hw.gpu.mode=swiftshader_indirect"  >> "$AVD_CFG"
-          echo "vm.heapSize=512"                   >> "$AVD_CFG"
-          echo "hw.keyboard=yes"                   >> "$AVD_CFG"
+          cat >> "$AVD_CFG" <<'AVD_CONFIG'
+          hw.ramSize=3072
+          hw.cpu.ncore=2
+          hw.gpu.enabled=yes
+          hw.gpu.mode=swiftshader_indirect
+          vm.heapSize=512
+          hw.keyboard=yes
+          AVD_CONFIG
           echo "AVD created"
 
       - name: Checkout repo files
         uses: actions/checkout@v4
 
       - name: Start Virtual Display and Emulator
+        shell: bash
         run: |
-          Xvfb :99 -screen 0 1280x720x24 -ac &
-          sleep 2
+          set -euo pipefail
           export DISPLAY=:99
-          fluxbox &
-          sleep 1
           export ANDROID_HOME=$HOME/android-sdk
-          nohup $ANDROID_HOME/emulator/emulator \
-            -avd android-cloud \
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+
+          Xvfb "$DISPLAY" -screen 0 1280x720x24 -ac +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
+          XVFB_PID=$!
+          fluxbox > /tmp/fluxbox.log 2>&1 &
+
+          adb start-server
+          emulator -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
             -gpu swiftshader_indirect \
             -memory 3072 -cores 2 \
-            -display :99 > /tmp/emu.log 2>&1 &
-          echo "Waiting for emulator to boot..."
-          for i in $(seq 1 72); do
-            BOOT=$($ANDROID_HOME/platform-tools/adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")
-            if [ "$BOOT" = "1" ]; then
-              echo "Emulator booted after $((i*5))s"
+            > /tmp/emu.log 2>&1 &
+          EMULATOR_PID=$!
+
+          echo "Waiting for emulator device..."
+          device_ready=false
+          for i in $(seq 1 90); do
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              echo "Emulator exited before ADB became ready"
+              cat /tmp/emu.log
+              exit 1
+            fi
+            if adb devices | awk 'NR > 1 && $2 == "device" { found=1 } END { exit(found ? 0 : 1) }'; then
+              device_ready=true
+              echo "ADB device detected after $((i * 2))s"
               break
             fi
-            sleep 5
+            sleep 2
           done
-          $ANDROID_HOME/platform-tools/adb shell input keyevent KEYCODE_WAKEUP || true
+
+          if [ "$device_ready" != true ]; then
+            echo "Timed out waiting for an ADB device"
+            cat /tmp/emu.log
+            adb devices || true
+            exit 1
+          fi
+
+          echo "Waiting for Android to finish booting..."
+          boot_completed=false
+          for i in $(seq 1 180); do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$BOOT" = "1" ]; then
+              boot_completed=true
+              echo "Emulator booted after $((i * 2))s"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$boot_completed" != true ]; then
+            echo "Timed out waiting for Android boot"
+            cat /tmp/emu.log
+            adb shell getprop ro.build.version.release || true
+            exit 1
+          fi
+
+          adb shell input keyevent KEYCODE_WAKEUP
 
       - name: Enable ADB over TCP
         run: |
           export ANDROID_HOME=$HOME/android-sdk
-          $ANDROID_HOME/platform-tools/adb tcpip 5555
+          adb tcpip 5555
           sleep 2
           echo "ADB TCP enabled"
 
@@ -108,9 +149,9 @@ jobs:
           cd .github/stream-server
           npm init -y > /dev/null 2>&1
           npm install ws > /dev/null 2>&1
-          wget -q "https://cdn.jsdelivr.net/gh/phoboslab/jsmpeg@master/jsmpeg.min.js" -O jsmpeg.min.js 2>/dev/null || true
+          wget -q "https://cdn.jsdelivr.net/gh/phoboslab/jsmpeg@master/jsmpeg.min.js" -O jsmpeg.min.js
           export DISPLAY=:99
-          node server.js &
+          nohup node server.js > /tmp/stream-server.log 2>&1 &
           sleep 3
           echo "Stream server started"
 
