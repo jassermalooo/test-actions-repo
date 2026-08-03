@@ -146,7 +146,7 @@ jobs:
       - name: Start Telegram AI Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nohup node .github/scripts/tg-bot.js > /tmp/tg-bot.log 2>&1 &
           sleep 3
@@ -177,7 +177,7 @@ jobs:
             if ! pgrep -f "tg-bot.js" > /dev/null; then
               echo "Bot crashed, restarting..."
               TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-              GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+              GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
               nohup node .github/scripts/tg-bot.js >> /tmp/tg-bot.log 2>&1 &
             fi
             sleep 60
