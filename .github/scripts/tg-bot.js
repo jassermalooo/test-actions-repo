@@ -1,14 +1,13 @@
 const { execSync } = require('child_process');
 const https = require('https');
-const http = require('http');
 const fs = require('fs');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = '5653032481';
-const GH_TOKEN = process.env.GITHUB_TOKEN; // GitHub Models (مجاني)
+const GH_TOKEN = process.env.GITHUB_TOKEN; // GitHub Models مجاني
 let offset = 0;
 
-// ── Telegram helpers ────────────────────────────────────────────────────────
+// ── Telegram helpers ─────────────────────────────────────────────────────────
 
 function tgRequest(method, body) {
   return new Promise((resolve, reject) => {
@@ -55,7 +54,7 @@ function sendPhoto(photoPath, caption) {
     }, res => {
       let raw = '';
       res.on('data', d => raw += d);
-      res.on('end', () => resolve(JSON.parse(raw)));
+      res.on('end', () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
     });
     req.on('error', reject);
     req.write(body);
@@ -63,7 +62,7 @@ function sendPhoto(photoPath, caption) {
   });
 }
 
-// ── ADB helpers ─────────────────────────────────────────────────────────────
+// ── ADB helpers ──────────────────────────────────────────────────────────────
 
 function adb(cmd) {
   try { return execSync(`adb ${cmd}`, { timeout: 15000 }).toString().trim(); }
@@ -81,7 +80,7 @@ function screenToBase64() {
   return fs.readFileSync(p).toString('base64');
 }
 
-// ── Web Search (DuckDuckGo - مجاني بدون API) ────────────────────────────────
+// ── DuckDuckGo Search (مجاني بدون API) ──────────────────────────────────────
 
 function webSearch(query) {
   return new Promise(resolve => {
@@ -100,8 +99,8 @@ function webSearch(query) {
           const results = [];
           if (data.AbstractText) results.push(data.AbstractText);
           if (data.Answer) results.push(data.Answer);
-          (data.RelatedTopics || []).slice(0, 3).forEach(t => {
-            if (t.Text) results.push(t.Text);
+          (data.RelatedTopics || []).slice(0, 4).forEach(t => {
+            if (t.Text) results.push('• ' + t.Text);
           });
           resolve(results.join('\n') || 'لا توجد نتائج');
         } catch(e) { resolve('فشل البحث'); }
@@ -112,15 +111,15 @@ function webSearch(query) {
   });
 }
 
-// ── GitHub Models - Llama 3.2 Vision (مجاني) ────────────────────────────────
+// ── GitHub Models - Llama 3.2 Vision 90B (مجاني) ────────────────────────────
 
 function askLlama(messages) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
       model: 'meta-llama-3.2-90b-vision-instruct',
       messages,
-      temperature: 0.1,
-      max_tokens: 800
+      max_tokens: 1024,
+      temperature: 0.3
     });
     const req = https.request({
       hostname: 'models.inference.ai.azure.com',
@@ -137,8 +136,8 @@ function askLlama(messages) {
       res.on('end', () => {
         try {
           const data = JSON.parse(raw);
-          if (data.choices) resolve(data.choices[0].message.content);
-          else reject(new Error(JSON.stringify(data).slice(0, 200)));
+          if (data.error) { reject(new Error(data.error.message || JSON.stringify(data.error))); return; }
+          resolve(data.choices?.[0]?.message?.content || 'لا يوجد رد');
         } catch(e) { reject(e); }
       });
     });
@@ -148,151 +147,182 @@ function askLlama(messages) {
   });
 }
 
-async function processCommand(userText) {
-  // 1) التقط الشاشة
-  const screenB64 = screenToBase64();
+// ── System Prompt ────────────────────────────────────────────────────────────
 
-  // 2) هل يحتاج بحث ويب؟
-  let searchContext = '';
-  const needsSearch = /ابحث|بحث|وش هو|كيف|معلومات|اخبرني عن/i.test(userText);
-  if (needsSearch) {
-    searchContext = await webSearch(userText);
-  }
+const SYSTEM_PROMPT = `أنت مساعد ذكي متخصص في التحكم بهاتف Android عبر ADB.
+لديك القدرة على رؤية شاشة الهاتف وتنفيذ أوامر ADB.
 
-  // 3) أرسل للنموذج مع الشاشة
-  const systemPrompt = `أنت مساعد ذكي يتحكم في هاتف Android عبر ADB.
-لديك قدرة على:
-- رؤية شاشة الهاتف الحالية (مُرفقة معك)
-- تنفيذ أوامر ADB
-- البحث في الويب
+عند تلقي طلب المستخدم، انظر إلى الشاشة وحدد الإجراء المناسب.
+ردك يجب أن يكون بصيغة JSON حصراً في الحالات التالية:
 
-قواعد الرد:
-رد بـ JSON فقط بهذا الشكل بدون أي نص خارجه:
-{
-  "think": "ماذا أرى في الشاشة وماذا يريد المستخدم",
-  "cmds": ["adb shell ..."],
-  "reply": "رسالة قصيرة للمستخدم"
-}
+للبحث في الإنترنت:
+{"action":"search","query":"استعلام البحث"}
 
-أوامر مفيدة:
-- فتح تطبيق: adb shell monkey -p com.package.name -c android.intent.category.LAUNCHER 1
-- Play Store: adb shell am start -a android.intent.action.VIEW -d 'market://details?id=com.package.name'
-- ضغط: adb shell input tap X Y
-- سحب: adb shell input swipe X1 Y1 X2 Y2 DURATION_MS
-- كتابة: adb shell input text 'text'
-- رجوع: adb shell input keyevent KEYCODE_BACK
-- هوم: adb shell input keyevent KEYCODE_HOME
-- فتح إعدادات: adb shell am start -a android.settings.SETTINGS
-- فتح كروم برابط: adb shell am start -a android.intent.action.VIEW -d 'https://URL'
-- screenshot فقط: ["__screenshot__"]
-- بحث ويب فقط: ["__search__"]`;
+لتنفيذ أوامر ADB:
+{"action":"adb","commands":["shell input tap 540 960","shell input keyevent 3"],"desc":"وصف ما سيتم فعله"}
 
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    {
-      role: 'user',
-      content: [
-        {
-          type: 'image_url',
-          image_url: { url: `data:image/png;base64,${screenB64}` }
-        },
-        {
-          type: 'text',
-          text: `أمر المستخدم: "${userText}"${searchContext ? `\n\nنتائج البحث:\n${searchContext}` : ''}`
-        }
+للرد النصي فقط (أسئلة عامة لا تحتاج للهاتف):
+{"action":"text","reply":"ردك هنا"}
+
+أوامر ADB المفيدة:
+- النقر: shell input tap X Y
+- الكتابة: shell input text 'النص'
+- Home: shell input keyevent 3
+- Back: shell input keyevent 4
+- Recent: shell input keyevent 187
+- تمرير لأسفل: shell input swipe 540 1200 540 400
+- تمرير لأعلى: shell input swipe 540 400 540 1200
+- فتح تطبيق: shell monkey -p com.package.name -c android.intent.category.LAUNCHER 1
+- إدخال URL: shell am start -a android.intent.action.VIEW -d 'https://...'
+`;
+
+// ── Main AI processor ────────────────────────────────────────────────────────
+
+async function processCommand(text) {
+  let screenBase64 = null;
+  try { screenBase64 = screenToBase64(); } catch(e) { /* emulator might not be ready */ }
+
+  const userContent = screenBase64
+    ? [
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${screenBase64}` } },
+        { type: 'text', text: `الشاشة الحالية للهاتف. طلب المستخدم: ${text}` }
       ]
-    }
-  ];
+    : text;
 
-  const raw = await askLlama(messages);
-  const cleaned = raw.replace(/```json|```/g, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  return JSON.parse(cleaned.slice(start, end + 1));
+  const aiReply = await askLlama([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userContent }
+  ]);
+
+  // Parse JSON response
+  const jsonMatch = aiReply.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    await sendMsg(aiReply);
+    return;
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]);
+
+  if (parsed.action === 'search') {
+    await sendMsg(`🔍 جاري البحث: *${parsed.query}*`);
+    const res = await webSearch(parsed.query);
+    await sendMsg(`📋 *نتائج البحث:*\n${res}`);
+
+  } else if (parsed.action === 'adb') {
+    await sendMsg(`⚙️ ${parsed.desc || 'جاري التنفيذ...'}`);
+    for (const cmd of parsed.commands) {
+      adb(cmd);
+      await new Promise(r => setTimeout(r, 700));
+    }
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      const after = screenshot();
+      await sendPhoto(after, '✅ تم التنفيذ');
+    } catch(e) {
+      await sendMsg('✅ تم التنفيذ');
+    }
+
+  } else if (parsed.action === 'text') {
+    await sendMsg(parsed.reply);
+
+  } else {
+    await sendMsg(aiReply);
+  }
 }
 
-// ── Main handler ─────────────────────────────────────────────────────────────
+// ── Command Handlers ─────────────────────────────────────────────────────────
 
-async function handleMessage(text) {
+async function handleMessage(msg) {
+  const text = (msg.text || '').trim();
+  if (!text) return;
+
+  console.log(`[MSG] ${text}`);
+
   if (text === '/start') {
-    await sendMsg(`🤖 *أنا بوت Android الذكي!*\n\nأستطيع:\n👁 رؤية شاشة هاتفك\n📱 التحكم الكامل بالهاتف\n🔍 البحث في الويب\n\nأمثلة:\n• نزّل يوتيوب\n• افتح كروم وروح لـ google.com\n• ابحث عن سعر الذهب اليوم\n• خذ screenshot\n• ارجع للرئيسية\n• وش تشوف في الشاشة الحين؟`);
+    await sendMsg(
+      '🤖 *Android Cloud Bot*\n\n' +
+      'بوت ذكي يتحكم في هاتف Android بالذكاء الاصطناعي 🧠\n\n' +
+      '*النموذج:* Llama 3.2 Vision 90B (يرى الشاشة)\n' +
+      '*البحث:* DuckDuckGo مجاني\n\n' +
+      '*أمثلة على الأوامر:*\n' +
+      '📱 `افتح يوتيوب`\n' +
+      '🔍 `ابحث عن أفضل تطبيقات 2025`\n' +
+      '📸 `خذ screenshot`\n' +
+      '🏠 `ارجع للرئيسية`\n' +
+      '⬇️ `نزّل تطبيق واتساب`\n' +
+      '💬 `اكتب مرحبا في محقل البحث`\n' +
+      '❓ `ما هو الطقس في الرياض اليوم؟`'
+    );
     return;
   }
 
-  if (/^(screenshot|صورة|شاشة|وش تشوف|وش فالشاشة)/i.test(text)) {
-    await sendMsg('📸 جاري التقاط الشاشة...');
-    const path = screenshot();
-    // أرسل للنموذج ليوصف ما يرى
-    const screenB64 = fs.readFileSync(path).toString('base64');
-    const desc = await askLlama([
-      { role: 'system', content: 'أنت مساعد. صف ما تراه في شاشة الهاتف بالعربية باختصار.' },
-      { role: 'user', content: [
-        { type: 'image_url', image_url: { url: `data:image/png;base64,${screenB64}` } },
-        { type: 'text', text: 'وش تشوف في الشاشة؟' }
-      ]}
-    ]);
-    await sendPhoto(path, desc.slice(0, 200));
-    return;
-  }
-
-  await sendMsg('🧠 أشوف الشاشة وأفكر...');
-
-  try {
-    const result = await processCommand(text);
-    console.log('[AI]', JSON.stringify(result));
-
-    let screenshotSent = false;
-    for (const cmd of result.cmds || []) {
-      if (cmd === '__screenshot__') {
-        const path = screenshot();
-        await sendPhoto(path);
-        screenshotSent = true;
-      } else if (cmd === '__search__') {
-        const sr = await webSearch(text);
-        await sendMsg(`🔍 نتائج البحث:\n${sr.slice(0, 500)}`);
-      } else {
-        const rawCmd = cmd.replace(/^adb /, '');
-        const out = adb(rawCmd);
-        console.log(`[ADB] ${rawCmd} → ${out.slice(0, 80)}`);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
-
-    // بعد تنفيذ الأوامر خذ screenshot تلقائي
-    if (!screenshotSent && (result.cmds || []).length > 0) {
-      await new Promise(r => setTimeout(r, 1500));
+  if (text === '/screen' || text === 'خذ screenshot' || text === 'screenshot') {
+    try {
+      await sendMsg('📸 جاري التقاط الشاشة...');
       const path = screenshot();
-      await sendPhoto(path, `✅ ${result.reply}`);
-    } else if (!screenshotSent) {
-      await sendMsg(`✅ ${result.reply}`);
+      await sendPhoto(path, '📱 شاشة الهاتف الحالية');
+    } catch(e) {
+      await sendMsg('❌ فشل التقاط الشاشة: ' + e.message);
     }
+    return;
+  }
 
-  } catch (e) {
-    console.error('[ERROR]', e.message);
-    await sendMsg(`❌ ${e.message.slice(0, 200)}`);
+  if (text === '/home' || text === 'ارجع للرئيسية') {
+    adb('shell input keyevent 3');
+    await sendMsg('🏠 تم الرجوع للرئيسية');
+    return;
+  }
+
+  if (text === '/back' || text === 'ارجع') {
+    adb('shell input keyevent 4');
+    await sendMsg('↩️ تم الضغط على Back');
+    return;
+  }
+
+  if (text === '/recent' || text === 'آخر التطبيقات') {
+    adb('shell input keyevent 187');
+    await sendMsg('📋 تم فتح آخر التطبيقات');
+    return;
+  }
+
+  // AI handles everything else
+  await sendMsg('🤔 جاري التحليل...');
+  try {
+    await processCommand(text);
+  } catch(e) {
+    console.error('Error:', e.message);
+    await sendMsg('❌ خطأ: ' + e.message);
   }
 }
 
-// ── Polling loop ─────────────────────────────────────────────────────────────
+// ── Polling Loop ─────────────────────────────────────────────────────────────
 
 async function poll() {
-  const res = await tgRequest('getUpdates', { offset, timeout: 30, allowed_updates: ['message'] });
-  if (res.ok && res.result?.length) {
-    for (const upd of res.result) {
-      offset = upd.update_id + 1;
-      if (!upd.message) continue;
-      if (String(upd.message.chat.id) !== CHAT_ID) continue;
-      const text = upd.message.text || '';
-      console.log(`[MSG] ${text}`);
-      handleMessage(text).catch(e => console.error('[HANDLER]', e.message));
+  try {
+    const res = await tgRequest('getUpdates', { offset, timeout: 30, allowed_updates: ['message'] });
+    if (res.result && res.result.length > 0) {
+      for (const update of res.result) {
+        offset = update.update_id + 1;
+        if (update.message && String(update.message.chat.id) === CHAT_ID) {
+          await handleMessage(update.message).catch(e => console.error('Handler error:', e.message));
+        }
+      }
     }
+  } catch(e) {
+    console.error('Poll error:', e.message);
+    await new Promise(r => setTimeout(r, 5000));
   }
+  setImmediate(poll);
 }
 
+// ── Start ────────────────────────────────────────────────────────────────────
+
 (async () => {
-  console.log('🤖 Smart Android Bot started');
-  await sendMsg('🚀 *Android Cloud جاهز!*\n\n👁 أنا أشوف شاشتك وأتحكم فيها\n🔍 أقدر أبحث في الويب\n\nأرسل /start');
-  while (true) {
-    try { await poll(); } catch (e) { console.error('[POLL]', e.message); await new Promise(r => setTimeout(r, 5000)); }
+  console.log('🚀 Telegram Bot starting - Llama 3.2 Vision + DuckDuckGo');
+  try {
+    await sendMsg('🤖 *Android Cloud Bot جاهز!*\n\nأرسل /start لمعرفة الأوامر المتاحة 🚀');
+  } catch(e) {
+    console.error('Failed to send start message:', e.message);
   }
+  poll();
 })();
