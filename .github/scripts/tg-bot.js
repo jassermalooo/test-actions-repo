@@ -116,7 +116,7 @@ function webSearch(query) {
 function askLlama(messages) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      model: 'meta-llama-3.2-90b-vision-instruct',
+      model: 'Llama-3.2-11B-Vision-Instruct',
       messages,
       max_tokens: 1024,
       temperature: 0.3
