@@ -28,7 +28,13 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y openjdk-17-jdk wget unzip xvfb fluxbox ffmpeg scrcpy nodejs npm
+          sudo apt-get install -y \
+            openjdk-17-jdk wget unzip \
+            xvfb fluxbox \
+            x11vnc \
+            scrcpy \
+            nodejs npm
+          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc
           echo "Dependencies installed"
 
       - name: Install Android SDK
@@ -61,21 +67,14 @@ jobs:
             -k "system-images;android-34;default;x86_64" \
             -d pixel_4 --force
 
-          # Locate config.ini — avdmanager sometimes places the avd dir elsewhere
-          AVD_DIR=$(find "$HOME/.android" /tmp -maxdepth 4 \
-            -type d -name "android-cloud.avd" 2>/dev/null | head -1)
-
+          # Locate config.ini dynamically
+          AVD_DIR=$(find "$HOME/.android" -maxdepth 4 -type d -name "android-cloud.avd" 2>/dev/null | head -1)
           if [ -z "$AVD_DIR" ]; then
             AVD_DIR="$ANDROID_AVD_HOME/android-cloud.avd"
             mkdir -p "$AVD_DIR"
-            echo "Warning: AVD dir not found by avdmanager, creating manually"
           fi
 
-          AVD_CFG="$AVD_DIR/config.ini"
-          # Create config.ini if it doesn't exist
-          touch "$AVD_CFG"
-
-          # Append hardware settings
+          touch "$AVD_DIR/config.ini"
           printf '%s\n' \
             'hw.ramSize=4096' \
             'hw.cpu.ncore=2' \
@@ -86,27 +85,26 @@ jobs:
             'hw.lcd.width=1080' \
             'hw.lcd.height=1920' \
             'hw.lcd.density=420' \
-            >> "$AVD_CFG"
+            >> "$AVD_DIR/config.ini"
 
-          echo "AVD created at: $AVD_DIR"
-          echo "AVD_DIR=$AVD_DIR" >> "$GITHUB_ENV"
+          echo "AVD created: $AVD_DIR"
           "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
 
       - name: Checkout repo files
         uses: actions/checkout@v4
 
       - name: Start Virtual Display and Emulator
-        shell: bash
         run: |
           set -euo pipefail
           export DISPLAY=:99
           export ANDROID_HOME=$HOME/android-sdk
-          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 
-          Xvfb "$DISPLAY" -screen 0 1280x720x24 -ac +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
-          XVFB_PID=$!
+          # Start virtual display
+          Xvfb :99 -screen 0 1080x1920x24 -ac +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
+          sleep 2
           fluxbox > /tmp/fluxbox.log 2>&1 &
 
+          # Start emulator
           adb start-server
           emulator -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
@@ -117,89 +115,73 @@ jobs:
             > /tmp/emu.log 2>&1 &
           EMULATOR_PID=$!
 
-          echo "Waiting for emulator device..."
-          device_ready=false
+          echo "Waiting for ADB device..."
           for i in $(seq 1 90); do
             if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
-              echo "Emulator exited before ADB became ready"
-              cat /tmp/emu.log
-              exit 1
+              echo "Emulator crashed"; cat /tmp/emu.log; exit 1
             fi
-            if adb devices | awk 'NR > 1 && $2 == "device" { found=1 } END { exit(found ? 0 : 1) }'; then
-              device_ready=true
-              echo "ADB device detected after $((i * 2))s"
-              break
+            if adb devices | awk 'NR>1 && $2=="device"{found=1} END{exit(found?0:1)}'; then
+              echo "ADB device ready after $((i*2))s"; break
             fi
             sleep 2
           done
 
-          if [ "$device_ready" != true ]; then
-            echo "Timed out waiting for an ADB device"
-            cat /tmp/emu.log
-            adb devices || true
-            exit 1
-          fi
-
-          echo "Waiting for Android to finish booting..."
-          boot_completed=false
+          echo "Waiting for Android boot..."
           for i in $(seq 1 180); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-            if [ "$BOOT" = "1" ]; then
-              boot_completed=true
-              echo "Emulator booted after $((i * 2))s"
-              break
-            fi
+            if [ "$BOOT" = "1" ]; then echo "Booted after $((i*2))s"; break; fi
             sleep 2
           done
 
-          if [ "$boot_completed" != true ]; then
-            echo "Timed out waiting for Android boot"
-            cat /tmp/emu.log
-            adb shell getprop ro.build.version.release || true
-            exit 1
-          fi
-
           adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm size 1080x1920 || true
 
       - name: Enable ADB over TCP
         run: |
-          export ANDROID_HOME=$HOME/android-sdk
           adb tcpip 5555
           sleep 2
-          echo "ADB TCP enabled"
+          echo "ADB TCP enabled on port 5555"
 
-      - name: Setup WebSocket Stream Server
+      - name: Setup noVNC (Browser VNC)
         run: |
-          cd .github/stream-server
-          npm init -y > /dev/null 2>&1
-          npm install ws > /dev/null 2>&1
-          wget -q "https://cdn.jsdelivr.net/gh/phoboslab/jsmpeg@master/jsmpeg.min.js" -O jsmpeg.min.js
           export DISPLAY=:99
-          nohup node server.js > /tmp/stream-server.log 2>&1 &
+
+          # Start x11vnc — captures the X display (where emulator window lives)
+          x11vnc -display :99 -nopw -forever -shared \
+            -rfbport 5900 -bg -quiet -noxdamage
+          sleep 2
+
+          # Start noVNC websockify on port 6080
+          nohup /tmp/novnc/utils/novnc_proxy \
+            --vnc localhost:5900 \
+            --listen 6080 \
+            > /tmp/novnc.log 2>&1 &
           sleep 3
-          echo "Stream server started"
+
+          echo "VNC port 5900 ready"
+          echo "noVNC browser client port 6080 ready"
 
       - name: Show Connection Info
         run: |
-          echo "=========================================================="
+          echo "============================================================"
           echo "  Android 14 Cloud Ready!"
-          echo "=========================================================="
+          echo "============================================================"
           echo ""
-          echo "  FASTEST - scrcpy مباشر (H.264 ~20ms):"
-          echo "  ----------------------------------------"
+          echo "  BROWSER (موبايل/كمبيوتر) — تحكم كامل بالضغط واللمس:"
+          echo "  http://$TAILSCALE_IP:6080/vnc.html"
+          echo ""
+          echo "  scrcpy — أسرع (كمبيوتر فقط):"
           echo "  scrcpy --tcpip=$TAILSCALE_IP:5555"
-          echo ""
-          echo "  BROWSER - WebSocket/MPEG1 (~80ms):"
-          echo "  ----------------------------------------"
-          echo "  http://$TAILSCALE_IP:8080"
           echo ""
           echo "  ADB مباشر:"
           echo "  adb connect $TAILSCALE_IP:5555"
-          echo "=========================================================="
+          echo "============================================================"
 
       - name: Keep Alive
         run: |
           while true; do
-            echo "[$(date +%T)] Android Cloud active | http://$TAILSCALE_IP:8080 | scrcpy --tcpip=$TAILSCALE_IP:5555"
+            echo "[$(date +%T)] Android Cloud active"
+            echo "  noVNC: http://$TAILSCALE_IP:6080/vnc.html"
+            echo "  scrcpy: scrcpy --tcpip=$TAILSCALE_IP:5555"
             sleep 300
           done
