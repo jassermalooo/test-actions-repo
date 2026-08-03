@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       camera_video_url:
-        description: 'رابط فيديو للكاميرا الافتراضية (اختياري - يدعم MP4)'
+        description: 'رابط فيديو للكاميرا الافتراضية (اختياري)'
         required: false
         default: ''
 
@@ -20,7 +20,6 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           sudo chmod 666 /dev/kvm || true
-          echo "KVM ready"
 
       - name: Install Tailscale and Connect
         run: |
@@ -37,50 +36,23 @@ jobs:
             openjdk-17-jdk wget unzip \
             xvfb fluxbox \
             x11vnc xdotool wmctrl \
-            scrcpy \
-            nodejs npm \
-            ffmpeg \
-            v4l2loopback-dkms \
-            v4l-utils
+            scrcpy ffmpeg \
+            v4l2loopback-dkms v4l-utils \
+            nodejs npm
           git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc
-          echo "Dependencies installed"
 
-      - name: Setup Virtual Camera (v4l2loopback)
+      - name: Setup Virtual Camera
         run: |
-          # Load the virtual camera kernel module
           sudo modprobe v4l2loopback devices=1 video_nr=0 card_label="VirtualCamera" exclusive_caps=1 || true
           sleep 2
-
-          # Check if device was created
-          ls /dev/video* 2>/dev/null && echo "Virtual camera device ready" || echo "No video device found"
-
-          # Start ffmpeg test pattern or download user video
           VIDEO_URL="${{ github.event.inputs.camera_video_url }}"
-
           if [ -n "$VIDEO_URL" ]; then
-            echo "Downloading user video..."
-            wget -q -O /tmp/camera_input.mp4 "$VIDEO_URL" && echo "Video downloaded"
-            # Loop the video into the virtual camera
-            nohup ffmpeg -re -stream_loop -1 \
-              -i /tmp/camera_input.mp4 \
-              -vf "scale=1280:720,fps=30" \
-              -f v4l2 /dev/video0 \
-              > /tmp/ffmpeg_cam.log 2>&1 &
+            wget -q -O /tmp/camera_input.mp4 "$VIDEO_URL"
+            nohup ffmpeg -re -stream_loop -1 -i /tmp/camera_input.mp4 -vf "scale=1280:720,fps=30" -f v4l2 /dev/video0 > /tmp/ffmpeg_cam.log 2>&1 &
           else
-            echo "Using default test pattern (color bars)"
-            # Generate animated test pattern (color bars)
-            nohup ffmpeg -re -f lavfi \
-              -i "testsrc=size=1280x720:rate=30" \
-              -vf "drawtext=text='Android Cloud Camera':x=10:y=10:fontsize=36:fontcolor=white" \
-              -f v4l2 /dev/video0 \
-              > /tmp/ffmpeg_cam.log 2>&1 &
+            nohup ffmpeg -re -f lavfi -i "testsrc=size=1280x720:rate=30" -f v4l2 /dev/video0 > /tmp/ffmpeg_cam.log 2>&1 &
           fi
-
-          sleep 3
-          echo "Virtual camera streaming started (PID: $!)"
-
-          # Verify stream is active
-          v4l2-ctl --list-devices 2>/dev/null || true
+          sleep 2
 
       - name: Install Android SDK
         run: |
@@ -95,95 +67,61 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1
-
-          # Use google_apis_playstore for Google Play Store support
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "emulator" \
             "platforms;android-34" \
             "system-images;android-34;google_apis_playstore;x86_64" > /dev/null 2>&1
-          echo "Android SDK installed with Google Play Store"
 
       - name: Create Android Virtual Device
         run: |
           export ANDROID_HOME=$HOME/android-sdk
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           mkdir -p "$ANDROID_AVD_HOME"
-
-          # Create AVD with google_apis_playstore image
           echo "no" | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             -n android-cloud \
             -k "system-images;android-34;google_apis_playstore;x86_64" \
             -d pixel_4 --force
-
           AVD_DIR=$(find "$HOME/.android" -maxdepth 4 -type d -name "android-cloud.avd" 2>/dev/null | head -1)
-          if [ -z "$AVD_DIR" ]; then
-            AVD_DIR="$ANDROID_AVD_HOME/android-cloud.avd"
-            mkdir -p "$AVD_DIR"
-          fi
-
-          touch "$AVD_DIR/config.ini"
+          [ -z "$AVD_DIR" ] && AVD_DIR="$ANDROID_AVD_HOME/android-cloud.avd" && mkdir -p "$AVD_DIR"
           printf '%s\n' \
-            'hw.ramSize=4096' \
-            'hw.cpu.ncore=2' \
-            'hw.gpu.enabled=yes' \
-            'hw.gpu.mode=swiftshader_indirect' \
-            'vm.heapSize=1024' \
-            'hw.keyboard=yes' \
-            'hw.lcd.width=1080' \
-            'hw.lcd.height=1920' \
-            'hw.lcd.density=420' \
-            'hw.camera.back=webcam0' \
-            'hw.camera.front=emulated' \
+            'hw.ramSize=4096' 'hw.cpu.ncore=2' \
+            'hw.gpu.enabled=yes' 'hw.gpu.mode=swiftshader_indirect' \
+            'vm.heapSize=1024' 'hw.keyboard=yes' \
+            'hw.lcd.width=1080' 'hw.lcd.height=1920' 'hw.lcd.density=420' \
+            'hw.camera.back=webcam0' 'hw.camera.front=emulated' \
             >> "$AVD_DIR/config.ini"
-
-          echo "AVD created with Google Play Store + Virtual Camera"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
 
       - name: Checkout repo files
         uses: actions/checkout@v4
 
       - name: Start Virtual Display and Emulator
         run: |
-          set -euo pipefail
           export DISPLAY=:99
           export ANDROID_HOME=$HOME/android-sdk
-
           Xvfb :99 -screen 0 1440x2960x24 -ac +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
           sleep 2
           fluxbox > /tmp/fluxbox.log 2>&1 &
-
           adb start-server
-
-          # Start emulator with virtual camera support
           emulator -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
             -gpu swiftshader_indirect \
-            -memory 4096 -cores 2 \
-            -accel on \
+            -memory 4096 -cores 2 -accel on \
             -netdelay none -netspeed full \
-            -camera-back webcam0 \
-            -camera-front emulated \
+            -camera-back webcam0 -camera-front emulated \
             > /tmp/emu.log 2>&1 &
           EMULATOR_PID=$!
-
-          echo "Waiting for ADB device..."
+          echo "Waiting for ADB..."
           for i in $(seq 1 90); do
-            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
-              echo "Emulator crashed"; cat /tmp/emu.log; exit 1
-            fi
-            if adb devices | awk 'NR>1 && $2=="device"{found=1} END{exit(found?0:1)}'; then
-              echo "ADB device ready after $((i*2))s"; break
-            fi
+            ! kill -0 "$EMULATOR_PID" 2>/dev/null && echo "Emulator crashed" && cat /tmp/emu.log && exit 1
+            adb devices | awk 'NR>1 && $2=="device"{found=1} END{exit(found?0:1)}' && echo "ADB ready after $((i*2))s" && break
             sleep 2
           done
-
-          echo "Waiting for Android boot..."
+          echo "Waiting for boot..."
           for i in $(seq 1 180); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-            if [ "$BOOT" = "1" ]; then echo "Booted after $((i*2))s"; break; fi
+            [ "$BOOT" = "1" ] && echo "Booted after $((i*2))s" && break
             sleep 2
           done
-
           adb shell input keyevent KEYCODE_WAKEUP
           adb shell wm size 1080x1920 || true
 
@@ -191,72 +129,56 @@ jobs:
         run: |
           adb tcpip 5555
           sleep 2
-          echo "ADB TCP enabled on port 5555"
 
-      - name: Setup VNC (VNC Viewer + noVNC)
+      - name: Setup VNC
         run: |
           export DISPLAY=:99
-
           sleep 3
           EMU_WIN=$(xdotool search --name "Android Emulator" 2>/dev/null | head -1 || true)
-          if [ -n "$EMU_WIN" ]; then
-            wmctrl -ir "$EMU_WIN" -b add,maximized_vert,maximized_horz || true
-            xdotool windowfocus "$EMU_WIN" || true
-            echo "Emulator window maximized"
-          fi
-
-          # Create VNC password
+          [ -n "$EMU_WIN" ] && wmctrl -ir "$EMU_WIN" -b add,maximized_vert,maximized_horz || true
           mkdir -p ~/.vnc
           x11vnc -storepasswd android1234 ~/.vnc/passwd
-          chmod 600 ~/.vnc/passwd
-
-          # Start x11vnc with password on port 5900
-          x11vnc -display :99 \
-            -rfbauth ~/.vnc/passwd \
-            -rfbport 5900 \
-            -forever -shared \
-            -bg -quiet -noxdamage
+          x11vnc -display :99 -rfbauth ~/.vnc/passwd -rfbport 5900 -forever -shared -bg -quiet -noxdamage
+          sleep 2
+          nohup /tmp/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 > /tmp/novnc.log 2>&1 &
           sleep 2
 
-          # Start noVNC on port 6080
-          nohup /tmp/novnc/utils/novnc_proxy \
-            --vnc localhost:5900 \
-            --listen 6080 \
-            > /tmp/novnc.log 2>&1 &
+      - name: Start Telegram AI Bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          nohup node .github/scripts/tg-bot.js > /tmp/tg-bot.log 2>&1 &
           sleep 3
-
-          echo "VNC ready"
+          # تأكد أن البوت شغّال
+          if pgrep -f "tg-bot.js" > /dev/null; then
+            echo "✅ Telegram bot is running"
+          else
+            echo "❌ Bot failed to start, logs:"
+            cat /tmp/tg-bot.log
+          fi
 
       - name: Show Connection Info
         run: |
-          VIDEO_URL="${{ github.event.inputs.camera_video_url }}"
-          CAM_INFO="Test Pattern (ألوان افتراضية)"
-          [ -n "$VIDEO_URL" ] && CAM_INFO="$VIDEO_URL"
-
           echo "============================================================"
-          echo "  Android 14 Cloud Ready! (Google Play Store + Virtual Camera)"
+          echo "  Android 14 Cloud Ready!"
           echo "============================================================"
-          echo ""
-          echo "  VNC Viewer (موبايل/كمبيوتر):"
-          echo "  Address : $TAILSCALE_IP:5900"
-          echo "  Password: android1234"
-          echo ""
-          echo "  BROWSER — بدون تطبيق:"
-          echo "  http://$TAILSCALE_IP:6080/vnc.html"
-          echo "  Password: android1234"
-          echo ""
-          echo "  الكاميرا الافتراضية: $CAM_INFO"
-          echo ""
-          echo "  scrcpy:"
-          echo "  scrcpy --tcpip=$TAILSCALE_IP:5555"
-          echo ""
-          echo "  ADB مباشر:"
-          echo "  adb connect $TAILSCALE_IP:5555"
+          echo "  VNC Viewer : $TAILSCALE_IP:5900  |  Password: android1234"
+          echo "  Browser    : http://$TAILSCALE_IP:6080/vnc.html"
+          echo "  Telegram   : بوت التحكم شغّال - أرسل /start"
+          echo "  ADB        : adb connect $TAILSCALE_IP:5555"
           echo "============================================================"
 
       - name: Keep Alive
         run: |
           while true; do
-            echo "[$(date +%T)] Android Cloud active | VNC: $TAILSCALE_IP:5900 | Pass: android1234"
-            sleep 300
+            echo "[$(date +%T)] active | VNC: $TAILSCALE_IP:5900 | Bot: running"
+            # إعادة تشغيل البوت إذا تعطّل
+            if ! pgrep -f "tg-bot.js" > /dev/null; then
+              echo "Bot crashed, restarting..."
+              TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+              GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+              nohup node .github/scripts/tg-bot.js >> /tmp/tg-bot.log 2>&1 &
+            fi
+            sleep 60
           done
