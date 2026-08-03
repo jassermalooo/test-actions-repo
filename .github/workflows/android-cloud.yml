@@ -52,18 +52,22 @@ jobs:
       - name: Create Android Virtual Device
         run: |
           export ANDROID_HOME=$HOME/android-sdk
+          mkdir -p $HOME/.android/avd
           echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
             -n android-cloud \
             -k "system-images;android-34;google_apis;x86_64" \
             -d pixel_4 --force
-          AVD_CFG=$HOME/.android/avd/android-cloud.avd/config.ini
-          sed -i "s/hw.ramSize=.*/hw.ramSize=2048/" $AVD_CFG 2>/dev/null || echo "hw.ramSize=2048" >> $AVD_CFG
-          sed -i "s/hw.cpu.ncore=.*/hw.cpu.ncore=2/" $AVD_CFG 2>/dev/null || echo "hw.cpu.ncore=2" >> $AVD_CFG
-          sed -i "s/hw.gpu.enabled=.*/hw.gpu.enabled=yes/" $AVD_CFG 2>/dev/null || echo "hw.gpu.enabled=yes" >> $AVD_CFG
-          sed -i "s/hw.gpu.mode=.*/hw.gpu.mode=swiftshader_indirect/" $AVD_CFG 2>/dev/null || echo "hw.gpu.mode=swiftshader_indirect" >> $AVD_CFG
-          echo "vm.heapSize=512" >> $AVD_CFG
-          echo "hw.keyboard=yes" >> $AVD_CFG
+          AVD_DIR=$HOME/.android/avd/android-cloud.avd
+          mkdir -p "$AVD_DIR"
+          AVD_CFG="$AVD_DIR/config.ini"
+          echo "hw.ramSize=2048"                  >> "$AVD_CFG"
+          echo "hw.cpu.ncore=2"                   >> "$AVD_CFG"
+          echo "hw.gpu.enabled=yes"               >> "$AVD_CFG"
+          echo "hw.gpu.mode=swiftshader_indirect" >> "$AVD_CFG"
+          echo "vm.heapSize=512"                  >> "$AVD_CFG"
+          echo "hw.keyboard=yes"                  >> "$AVD_CFG"
           echo "AVD created"
+          cat "$AVD_CFG"
 
       - name: Start Virtual Display and Emulator
         run: |
@@ -120,4 +124,3 @@ jobs:
             echo "[$(date +%T)] Android Cloud active | $TAILSCALE_IP"
             sleep 300
           done
-
