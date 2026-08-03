@@ -53,22 +53,41 @@ jobs:
       - name: Create Android Virtual Device
         run: |
           export ANDROID_HOME=$HOME/android-sdk
-          mkdir -p "$HOME/.android/avd"
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+
           echo "no" | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             -n android-cloud \
             -k "system-images;android-34;google_apis;x86_64" \
             -d pixel_4 --force
-          AVD_DIR="$HOME/.android/avd/android-cloud.avd"
+
+          # Locate config.ini — avdmanager sometimes places the avd dir elsewhere
+          AVD_DIR=$(find "$HOME/.android" /tmp -maxdepth 4 \
+            -type d -name "android-cloud.avd" 2>/dev/null | head -1)
+
+          if [ -z "$AVD_DIR" ]; then
+            AVD_DIR="$ANDROID_AVD_HOME/android-cloud.avd"
+            mkdir -p "$AVD_DIR"
+            echo "Warning: AVD dir not found by avdmanager, creating manually"
+          fi
+
           AVD_CFG="$AVD_DIR/config.ini"
+          # Create config.ini if it doesn't exist
+          touch "$AVD_CFG"
+
+          # Append hardware settings (no leading whitespace)
           cat >> "$AVD_CFG" <<'AVD_CONFIG'
-          hw.ramSize=3072
-          hw.cpu.ncore=2
-          hw.gpu.enabled=yes
-          hw.gpu.mode=swiftshader_indirect
-          vm.heapSize=512
-          hw.keyboard=yes
-          AVD_CONFIG
-          echo "AVD created"
+hw.ramSize=3072
+hw.cpu.ncore=2
+hw.gpu.enabled=yes
+hw.gpu.mode=swiftshader_indirect
+vm.heapSize=512
+hw.keyboard=yes
+AVD_CONFIG
+
+          echo "AVD created at: $AVD_DIR"
+          echo "AVD_DIR=$AVD_DIR" >> "$GITHUB_ENV"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
 
       - name: Checkout repo files
         uses: actions/checkout@v4
