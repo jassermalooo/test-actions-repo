@@ -67,7 +67,6 @@ jobs:
             -k "system-images;android-34;google_apis;x86_64" \
             -d pixel_4 --force
 
-          # Locate config.ini dynamically
           AVD_DIR=$(find "$HOME/.android" -maxdepth 4 -type d -name "android-cloud.avd" 2>/dev/null | head -1)
           if [ -z "$AVD_DIR" ]; then
             AVD_DIR="$ANDROID_AVD_HOME/android-cloud.avd"
@@ -99,12 +98,10 @@ jobs:
           export DISPLAY=:99
           export ANDROID_HOME=$HOME/android-sdk
 
-          # Start virtual display — wide enough to fit emulator + controls
           Xvfb :99 -screen 0 1440x2960x24 -ac +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
           sleep 2
           fluxbox > /tmp/fluxbox.log 2>&1 &
 
-          # Start emulator
           adb start-server
           emulator -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
@@ -142,11 +139,10 @@ jobs:
           sleep 2
           echo "ADB TCP enabled on port 5555"
 
-      - name: Setup noVNC (Browser VNC)
+      - name: Setup VNC (VNC Viewer + noVNC)
         run: |
           export DISPLAY=:99
 
-          # Maximize and remove decorations from the emulator window
           sleep 3
           EMU_WIN=$(xdotool search --name "Android Emulator" 2>/dev/null | head -1 || true)
           if [ -n "$EMU_WIN" ]; then
@@ -155,20 +151,28 @@ jobs:
             echo "Emulator window maximized"
           fi
 
-          # Start x11vnc — captures the X display (where emulator window lives)
-          x11vnc -display :99 -nopw -forever -shared \
-            -rfbport 5900 -bg -quiet -noxdamage
+          # إنشاء ملف باسورد VNC
+          mkdir -p ~/.vnc
+          x11vnc -storepasswd android1234 ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+
+          # تشغيل x11vnc مع الباسورد على بورت 5900
+          x11vnc -display :99 \
+            -rfbauth ~/.vnc/passwd \
+            -rfbport 5900 \
+            -forever -shared \
+            -bg -quiet -noxdamage
           sleep 2
 
-          # Start noVNC websockify on port 6080
+          # تشغيل noVNC على بورت 6080 (للمتصفح)
           nohup /tmp/novnc/utils/novnc_proxy \
             --vnc localhost:5900 \
             --listen 6080 \
             > /tmp/novnc.log 2>&1 &
           sleep 3
 
-          echo "VNC port 5900 ready"
-          echo "noVNC browser client port 6080 ready"
+          echo "VNC ready on port 5900 (with password)"
+          echo "noVNC ready on port 6080 (browser)"
 
       - name: Show Connection Info
         run: |
@@ -176,8 +180,13 @@ jobs:
           echo "  Android 14 Cloud Ready!"
           echo "============================================================"
           echo ""
-          echo "  BROWSER (موبايل/كمبيوتر) — تحكم كامل بالضغط واللمس:"
+          echo "  VNC Viewer (موبايل/كمبيوتر):"
+          echo "  Address : $TAILSCALE_IP:5900"
+          echo "  Password: android1234"
+          echo ""
+          echo "  BROWSER — بدون تطبيق:"
           echo "  http://$TAILSCALE_IP:6080/vnc.html"
+          echo "  Password: android1234"
           echo ""
           echo "  scrcpy — أسرع (كمبيوتر فقط):"
           echo "  scrcpy --tcpip=$TAILSCALE_IP:5555"
@@ -190,7 +199,7 @@ jobs:
         run: |
           while true; do
             echo "[$(date +%T)] Android Cloud active"
+            echo "  VNC Viewer: $TAILSCALE_IP:5900  |  Password: android1234"
             echo "  noVNC: http://$TAILSCALE_IP:6080/vnc.html"
-            echo "  scrcpy: scrcpy --tcpip=$TAILSCALE_IP:5555"
             sleep 300
           done
