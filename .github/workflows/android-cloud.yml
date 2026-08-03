@@ -11,6 +11,9 @@ on:
 jobs:
   android-cloud:
     runs-on: ubuntu-latest
+    permissions:
+      models: read
+      contents: read
     timeout-minutes: 3600
 
     steps:
