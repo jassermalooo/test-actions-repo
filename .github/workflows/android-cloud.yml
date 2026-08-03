@@ -88,7 +88,7 @@ jobs:
             'hw.gpu.enabled=yes' 'hw.gpu.mode=swiftshader_indirect' \
             'vm.heapSize=1024' 'hw.keyboard=yes' \
             'hw.lcd.width=1080' 'hw.lcd.height=1920' 'hw.lcd.density=420' \
-            'hw.camera.back=webcam0' 'hw.camera.front=emulated' \
+            'hw.camera.back=webcam0' 'hw.camera.front=emulated' \\n            'disk.dataPartition.size=12G' \
             >> "$AVD_DIR/config.ini"
 
       - name: Checkout repo files
