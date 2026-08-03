@@ -27,7 +27,13 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y openjdk-17-jdk wget unzip xvfb x11vnc fluxbox novnc websockify scrcpy 2>/dev/null || true
+          sudo apt-get install -y \
+            openjdk-17-jdk wget unzip \
+            xvfb fluxbox \
+            ffmpeg \
+            scrcpy \
+            nodejs npm \
+            2>/dev/null || true
           echo "Dependencies installed"
 
       - name: Install Android SDK
@@ -60,14 +66,13 @@ jobs:
           AVD_DIR=$HOME/.android/avd/android-cloud.avd
           mkdir -p "$AVD_DIR"
           AVD_CFG="$AVD_DIR/config.ini"
-          echo "hw.ramSize=2048"                  >> "$AVD_CFG"
+          echo "hw.ramSize=3072"                  >> "$AVD_CFG"
           echo "hw.cpu.ncore=2"                   >> "$AVD_CFG"
           echo "hw.gpu.enabled=yes"               >> "$AVD_CFG"
           echo "hw.gpu.mode=swiftshader_indirect" >> "$AVD_CFG"
           echo "vm.heapSize=512"                  >> "$AVD_CFG"
           echo "hw.keyboard=yes"                  >> "$AVD_CFG"
           echo "AVD created"
-          cat "$AVD_CFG"
 
       - name: Start Virtual Display and Emulator
         run: |
@@ -81,46 +86,153 @@ jobs:
             -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
             -gpu swiftshader_indirect \
-            -memory 2048 -cores 2 \
+            -memory 3072 -cores 2 \
             -display :99 > /tmp/emu.log 2>&1 &
           echo "Waiting for emulator to boot..."
-          for i in $(seq 1 60); do
+          for i in $(seq 1 72); do
             BOOT=$($ANDROID_HOME/platform-tools/adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")
             if [ "$BOOT" = "1" ]; then
-              echo "Emulator booted after ${i}x5s"
+              echo "✅ Emulator booted after $((i*5))s"
               break
             fi
             sleep 5
           done
           $ANDROID_HOME/platform-tools/adb shell input keyevent KEYCODE_WAKEUP || true
-          echo "Emulator ready"
 
-      - name: Start VNC and noVNC
-        run: |
-          export DISPLAY=:99
-          x11vnc -display :99 -nopw -listen 0.0.0.0 -port 5900 -forever -shared -bg -q
-          sleep 1
-          websockify --web=/usr/share/novnc --wrap-mode=ignore 0.0.0.0:6080 localhost:5900 &
-          echo "VNC + noVNC ready"
-
-      - name: Enable ADB TCP and Show Connection Info
+      - name: Enable ADB over TCP (for scrcpy)
         run: |
           export ANDROID_HOME=$HOME/android-sdk
-          $ANDROID_HOME/platform-tools/adb tcpip 5555 || true
-          echo "============================================"
-          echo "  Android 14 Cloud Ready!"
-          echo "--------------------------------------------"
-          echo "  Browser : http://$TAILSCALE_IP:6080/vnc.html"
-          echo "  VNC     : $TAILSCALE_IP:5900"
-          echo "  scrcpy  : scrcpy --tcpip=$TAILSCALE_IP:5555"
-          echo "  ADB     : adb connect $TAILSCALE_IP:5555"
-          echo "--------------------------------------------"
-          echo "  Android 14 | 2GB RAM | 2 CPU | KVM"
-          echo "============================================"
+          $ANDROID_HOME/platform-tools/adb tcpip 5555
+          sleep 2
+          echo "ADB TCP enabled on port 5555"
+
+      - name: Setup JSMpeg WebSocket Stream Server
+        run: |
+          mkdir -p /tmp/streamserver
+          cd /tmp/streamserver
+          npm init -y > /dev/null 2>&1
+          npm install ws > /dev/null 2>&1
+
+          # HTML Player Page
+          cat > player.html << 'HTML'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Android Cloud Stream</title>
+            <style>
+              body { margin:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; color:#fff; font-family:Arial; }
+              canvas { border:2px solid #333; max-width:100%; max-height:85vh; }
+              #info { margin-top:10px; font-size:13px; color:#aaa; }
+              #status { color:#4CAF50; font-weight:bold; margin-bottom:8px; }
+            </style>
+          </head>
+          <body>
+            <div id="status">🔄 Connecting...</div>
+            <canvas id="canvas"></canvas>
+            <div id="info">Android 14 Cloud | H.264/MPEG1 WebSocket Stream</div>
+            <script src="jsmpeg.min.js"></script>
+            <script>
+              const ws = new WebSocket('ws://' + location.hostname + ':8081');
+              const player = new JSMpeg.Player(null, {
+                source: ws,
+                canvas: document.getElementById('canvas'),
+                autoplay: true,
+                audio: false,
+                loop: false,
+                onSourceEstablished: () => {
+                  document.getElementById('status').textContent = '✅ Connected - Android 14 Live';
+                  document.getElementById('status').style.color = '#4CAF50';
+                },
+              });
+            </script>
+          </body>
+          </html>
+HTML
+
+          # Download JSMpeg
+          wget -q https://jsmpeg.com/jsmpeg.min.js -O jsmpeg.min.js 2>/dev/null || \
+          wget -q "https://cdn.jsdelivr.net/gh/phoboslab/jsmpeg@master/jsmpeg.min.js" -O jsmpeg.min.js 2>/dev/null || true
+
+          # Node.js WebSocket stream server
+          cat > server.js << 'JS'
+          const http = require('http');
+          const WebSocket = require('ws');
+          const { spawn } = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+
+          // HTTP server — serves the HTML player
+          const httpServer = http.createServer((req, res) => {
+            if (req.url === '/jsmpeg.min.js') {
+              res.writeHead(200, {'Content-Type':'application/javascript'});
+              res.end(fs.readFileSync(path.join(__dirname, 'jsmpeg.min.js')));
+            } else {
+              res.writeHead(200, {'Content-Type':'text/html'});
+              res.end(fs.readFileSync(path.join(__dirname, 'player.html')));
+            }
+          });
+          httpServer.listen(8080, () => console.log('🌐 HTTP player on port 8080'));
+
+          // WebSocket server — streams MPEG1 video
+          const wss = new WebSocket.Server({ port: 8081 });
+          wss.on('connection', (ws) => {
+            console.log('📱 Client connected, starting stream...');
+            const ffmpeg = spawn('ffmpeg', [
+              '-f', 'x11grab',
+              '-r', '30',
+              '-s', '720x1280',
+              '-i', ':99',
+              '-f', 'mpegts',
+              '-codec:v', 'mpeg1video',
+              '-b:v', '2000k',
+              '-bf', '0',
+              '-muxdelay', '0.001',
+              'pipe:1'
+            ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+            ffmpeg.stdout.on('data', (data) => {
+              if (ws.readyState === ws.OPEN) ws.send(data, { binary: true });
+            });
+
+            ws.on('close', () => {
+              console.log('Client disconnected');
+              ffmpeg.kill('SIGKILL');
+            });
+
+            ffmpeg.on('exit', (code) => console.log('ffmpeg exited:', code));
+          });
+          console.log('📡 WebSocket stream on port 8081');
+JS
+
+          node server.js &
+          sleep 2
+          echo "✅ Stream server started"
+
+      - name: Show Connection Info
+        run: |
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║         🚀 Android 14 Cloud — Ready!             ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║                                                  ║"
+          echo "║  ⚡ FASTEST — scrcpy مباشر (~20ms H.264)         ║"
+          echo "║  ──────────────────────────────────────────────  ║"
+          echo "║  1. ثبّت scrcpy على جهازك                        ║"
+          echo "║  2. شغّل:                                         ║"
+          echo "║     scrcpy --tcpip=$TAILSCALE_IP:5555            ║"
+          echo "║                                                  ║"
+          echo "║  🌐 BROWSER — WebSocket/MPEG1 (~80ms)            ║"
+          echo "║  ──────────────────────────────────────────────  ║"
+          echo "║  افتح في متصفحك:                                 ║"
+          echo "║     http://$TAILSCALE_IP:8080                    ║"
+          echo "║                                                  ║"
+          echo "║  📡 ADB مباشر:                                   ║"
+          echo "║     adb connect $TAILSCALE_IP:5555               ║"
+          echo "║                                                  ║"
+          echo "╚══════════════════════════════════════════════════╝"
 
       - name: Keep Alive
         run: |
           while true; do
-            echo "[$(date +%T)] Android Cloud active | $TAILSCALE_IP"
+            echo "[$(date +%T)] ✅ Android Cloud active | IP: $TAILSCALE_IP | stream: http://$TAILSCALE_IP:8080"
             sleep 300
           done
