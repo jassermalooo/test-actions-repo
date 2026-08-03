@@ -75,15 +75,15 @@ jobs:
           # Create config.ini if it doesn't exist
           touch "$AVD_CFG"
 
-          # Append hardware settings (no leading whitespace)
-          cat >> "$AVD_CFG" <<'AVD_CONFIG'
-hw.ramSize=3072
-hw.cpu.ncore=2
-hw.gpu.enabled=yes
-hw.gpu.mode=swiftshader_indirect
-vm.heapSize=512
-hw.keyboard=yes
-AVD_CONFIG
+          # Append hardware settings
+          printf '%s\n' \
+            'hw.ramSize=3072' \
+            'hw.cpu.ncore=2' \
+            'hw.gpu.enabled=yes' \
+            'hw.gpu.mode=swiftshader_indirect' \
+            'vm.heapSize=512' \
+            'hw.keyboard=yes' \
+            >> "$AVD_CFG"
 
           echo "AVD created at: $AVD_DIR"
           echo "AVD_DIR=$AVD_DIR" >> "$GITHUB_ENV"
