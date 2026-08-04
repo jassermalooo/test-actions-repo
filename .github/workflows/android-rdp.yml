@@ -1,0 +1,133 @@
+name: Android RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node/kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm || true
+
+      - name: Install Desktop + xRDP + Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 xfce4-goodies \
+            xrdp \
+            openjdk-17-jdk wget unzip \
+            xvfb dbus-x11 \
+            nodejs npm
+          sudo systemctl enable xrdp
+
+      - name: Create RDP User
+        run: |
+          sudo useradd -m -s /bin/bash android
+          echo "android:android123" | sudo chpasswd
+          sudo usermod -aG sudo android
+          echo "User: android | Password: android123"
+
+      - name: Configure xRDP to use XFCE
+        run: |
+          echo "startxfce4" | sudo tee /home/android/.xsession
+          sudo chown android:android /home/android/.xsession
+          sudo sed -i 's/port=3389/port=3389/' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/^test -x/# test -x/' /etc/xrdp/startwm.sh || true
+
+      - name: Install Android SDK
+        run: |
+          export ANDROID_HOME=/opt/android-sdk
+          sudo mkdir -p "$ANDROID_HOME/cmdline-tools"
+          cd /tmp
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q commandlinetools-linux-11076708_latest.zip
+          sudo mv cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+          sudo chmod -R 777 "$ANDROID_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "emulator" \
+            "platforms;android-34" \
+            "system-images;android-34;google_apis_playstore;x86_64" > /dev/null 2>&1
+
+      - name: Create Android Virtual Device
+        run: |
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_AVD_HOME="/home/android/.android/avd"
+          sudo -u android mkdir -p "$ANDROID_AVD_HOME"
+          echo "no" | sudo -u android "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            -n android-rdp \
+            -k "system-images;android-34;google_apis_playstore;x86_64" \
+            -d pixel_4 --force
+          AVD_DIR=$(find /home/android/.android -maxdepth 4 -type d -name "android-rdp.avd" 2>/dev/null | head -1)
+          [ -z "$AVD_DIR" ] && AVD_DIR="$ANDROID_AVD_HOME/android-rdp.avd" && sudo -u android mkdir -p "$AVD_DIR"
+          printf '%s\n' \
+            'hw.ramSize=3072' 'hw.cpu.ncore=2' \
+            'hw.gpu.enabled=yes' 'hw.gpu.mode=swiftshader_indirect' \
+            'vm.heapSize=512' 'hw.keyboard=yes' \
+            'hw.lcd.width=1080' 'hw.lcd.height=1920' 'hw.lcd.density=420' \
+            'disk.dataPartition.size=8G' \
+            | sudo tee -a "$AVD_DIR/config.ini" > /dev/null
+
+      - name: Start Xvfb + Android Emulator
+        run: |
+          export DISPLAY=:10
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_AVD_HOME="/home/android/.android/avd"
+          sudo -u android Xvfb :10 -screen 0 1280x800x24 -ac > /tmp/xvfb.log 2>&1 &
+          sleep 2
+          sudo -u android DISPLAY=:10 ANDROID_HOME=$ANDROID_HOME ANDROID_AVD_HOME=$ANDROID_AVD_HOME \
+            "$ANDROID_HOME/emulator/emulator" \
+            -avd android-rdp \
+            -no-audio -no-snapshot -no-boot-anim \
+            -gpu swiftshader_indirect \
+            -memory 3072 -cores 2 -accel on \
+            > /tmp/emu.log 2>&1 &
+          echo "Waiting for emulator to boot..."
+          for i in $(seq 1 120); do
+            BOOT=$(sudo -u android ANDROID_HOME=$ANDROID_HOME adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            [ "$BOOT" = "1" ] && echo "Booted after $((i*3))s" && break
+            sleep 3
+          done
+          sudo -u android ANDROID_HOME=$ANDROID_HOME adb shell input keyevent KEYCODE_WAKEUP || true
+
+      - name: Start xRDP Service
+        run: |
+          sudo systemctl start xrdp
+          sleep 2
+          sudo systemctl status xrdp | head -5
+
+      - name: Install Tailscale + Connect
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=android-rdp-${{ github.run_id }}
+          sleep 5
+          TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
+          echo "Tailscale IP: $TS_IP"
+
+      - name: Send Connection Info to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.Tlgram }}
+        run: |
+          TS_IP="${{ env.TAILSCALE_IP }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -F chat_id=5653032481 \
+            -F "text=Android RDP Ready! IP: ${TS_IP}:3389 | User: android | Pass: android123" || true
+
+      - name: Keep Alive
+        run: |
+          while true; do
+            echo "[$(date +%T)] active | IP: $TAILSCALE_IP"
+            sleep 60
+          done
