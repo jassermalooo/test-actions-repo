@@ -5,7 +5,7 @@ on:
 
 jobs:
   windows-rdp:
-    runs-on: windows-2019
+    runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
