@@ -31,6 +31,7 @@ jobs:
             openjdk-17-jdk wget unzip \
             xvfb fluxbox \
             x11vnc xdotool wmctrl \
+            libpulse0 libgl1 libnss3 libxcomposite1 libxcursor1 libxrandr2 libxss1 \
             nodejs npm
           git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc
 
