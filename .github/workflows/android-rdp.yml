@@ -21,11 +21,9 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 xfce4-goodies xfce4-session \
-            xrdp \
-            dbus dbus-x11 \
+            xrdp dbus dbus-x11 \
             openjdk-17-jdk wget unzip \
-            xvfb \
-            nodejs npm
+            xvfb nodejs npm
 
       - name: Create RDP User
         run: |
@@ -34,44 +32,18 @@ jobs:
           sudo usermod -aG sudo android
           echo "User: android | Password: android123"
 
-      - name: Fix xRDP + XFCE Session (Unable to load failsafe session)
+      - name: Fix xRDP XFCE Session
         run: |
-          # Fix 1: Proper .xsession for android user
-          sudo tee /home/android/.xsession > /dev/null << 'EOF'
-#!/bin/bash
-export XDG_CONFIG_DIRS=/etc/xdg
-export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
-exec startxfce4
-EOF
+          printf '#!/bin/bash\nexport XDG_CONFIG_DIRS=/etc/xdg\nexport XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share\nexec startxfce4\n' | sudo tee /home/android/.xsession
           sudo chmod +x /home/android/.xsession
           sudo chown android:android /home/android/.xsession
-
-          # Fix 2: Override xrdp startwm.sh to launch XFCE directly
-          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
-#!/bin/sh
-export XDG_CONFIG_DIRS=/etc/xdg
-export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
-exec startxfce4
-EOF
+          printf '#!/bin/sh\nexport XDG_CONFIG_DIRS=/etc/xdg\nexport XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share\nexec startxfce4\n' | sudo tee /etc/xrdp/startwm.sh
           sudo chmod +x /etc/xrdp/startwm.sh
-
-          # Fix 3: Allow xRDP through polkit (fixes colord/authentication popups)
           sudo mkdir -p /etc/polkit-1/localauthority/50-local.d
-          sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-xrdp.pkla > /dev/null << 'EOF'
-[Allow xRDP Users]
-Identity=unix-user:*
-Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
-ResultAny=no
-ResultInactive=no
-ResultActive=yes
-EOF
-
-          # Fix 4: Ensure dbus is running before xrdp starts
+          printf '[Allow xRDP]\nIdentity=unix-user:*\nAction=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile\nResultAny=no\nResultInactive=no\nResultActive=yes\n' | sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-xrdp.pkla
           sudo systemctl enable dbus
           sudo systemctl start dbus
           sleep 2
-
-          # Start xRDP
           sudo systemctl enable xrdp
           sudo systemctl start xrdp
           sleep 3
@@ -107,13 +79,10 @@ EOF
             -d pixel_4 --force
           AVD_DIR=$(find /home/android/.android -maxdepth 4 -type d -name "android-rdp.avd" 2>/dev/null | head -1)
           [ -z "$AVD_DIR" ] && AVD_DIR="$ANDROID_AVD_HOME/android-rdp.avd" && sudo -u android mkdir -p "$AVD_DIR"
-          printf '%s\n' \
-            'hw.ramSize=3072' 'hw.cpu.ncore=2' \
-            'hw.gpu.enabled=yes' 'hw.gpu.mode=swiftshader_indirect' \
-            'vm.heapSize=512' 'hw.keyboard=yes' \
+          printf '%s\n' 'hw.ramSize=3072' 'hw.cpu.ncore=2' 'hw.gpu.enabled=yes' \
+            'hw.gpu.mode=swiftshader_indirect' 'vm.heapSize=512' 'hw.keyboard=yes' \
             'hw.lcd.width=1080' 'hw.lcd.height=1920' 'hw.lcd.density=420' \
-            'disk.dataPartition.size=8G' \
-            | sudo tee -a "$AVD_DIR/config.ini" > /dev/null
+            'disk.dataPartition.size=8G' | sudo tee -a "$AVD_DIR/config.ini" > /dev/null
 
       - name: Start Xvfb + Android Emulator
         run: |
@@ -123,13 +92,10 @@ EOF
           sudo -u android Xvfb :10 -screen 0 1280x800x24 -ac > /tmp/xvfb.log 2>&1 &
           sleep 2
           sudo -u android DISPLAY=:10 ANDROID_HOME=$ANDROID_HOME ANDROID_AVD_HOME=$ANDROID_AVD_HOME \
-            "$ANDROID_HOME/emulator/emulator" \
-            -avd android-rdp \
-            -no-audio -no-snapshot -no-boot-anim \
-            -gpu swiftshader_indirect \
-            -memory 3072 -cores 2 -accel on \
-            > /tmp/emu.log 2>&1 &
-          echo "Waiting for emulator to boot..."
+            "$ANDROID_HOME/emulator/emulator" -avd android-rdp \
+            -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect \
+            -memory 3072 -cores 2 -accel on > /tmp/emu.log 2>&1 &
+          echo "Waiting for emulator boot..."
           for i in $(seq 1 120); do
             BOOT=$(sudo -u android ANDROID_HOME=$ANDROID_HOME adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
             [ "$BOOT" = "1" ] && echo "Booted after $((i*3))s" && break
@@ -159,7 +125,6 @@ EOF
         run: |
           while true; do
             echo "[$(date +%T)] active | IP: $TAILSCALE_IP"
-            # Restart xrdp if crashed
             systemctl is-active --quiet xrdp || sudo systemctl restart xrdp
             sleep 60
           done
