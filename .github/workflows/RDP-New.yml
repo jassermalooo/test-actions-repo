@@ -58,15 +58,16 @@ jobs:
           echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
           Write-Host "Tailscale IP: $ip"
 
-      - name: Send Connection Info to Telegram
+      - name: Print Connection Info
         shell: powershell
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.Tlgram }}
         run: |
-          $ip = $env:TAILSCALE_IP
-          $msg = "Windows RDP Ready!%0AIP: ${ip}:3389%0AUser: RDP%0APass: 12345"
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=5653032481&text=$msg" -Method Get | Out-Null
-          Write-Host "Connection info sent to Telegram"
+          Write-Host "================================"
+          Write-Host "RDP Ready!"
+          Write-Host "IP: $env:TAILSCALE_IP"
+          Write-Host "Port: 3389"
+          Write-Host "User: RDP"
+          Write-Host "Pass: 12345"
+          Write-Host "================================"
 
       - name: Keep Alive
         shell: powershell
