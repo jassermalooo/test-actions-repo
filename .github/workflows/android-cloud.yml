@@ -2,18 +2,10 @@ name: Android Cloud
 
 on:
   workflow_dispatch:
-    inputs:
-      camera_video_url:
-        description: 'رابط فيديو للكاميرا الافتراضية (اختياري)'
-        required: false
-        default: ''
 
 jobs:
   android-cloud:
     runs-on: ubuntu-latest
-    permissions:
-      models: read
-      contents: read
     timeout-minutes: 3600
 
     steps:
@@ -39,23 +31,8 @@ jobs:
             openjdk-17-jdk wget unzip \
             xvfb fluxbox \
             x11vnc xdotool wmctrl \
-            scrcpy ffmpeg \
-            v4l2loopback-dkms v4l-utils \
             nodejs npm
           git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc
-
-      - name: Setup Virtual Camera
-        run: |
-          sudo modprobe v4l2loopback devices=1 video_nr=0 card_label="VirtualCamera" exclusive_caps=1 || true
-          sleep 2
-          VIDEO_URL="${{ github.event.inputs.camera_video_url }}"
-          if [ -n "$VIDEO_URL" ]; then
-            wget -q -O /tmp/camera_input.mp4 "$VIDEO_URL"
-            nohup ffmpeg -re -stream_loop -1 -i /tmp/camera_input.mp4 -vf "scale=1280:720,fps=30" -f v4l2 /dev/video0 > /tmp/ffmpeg_cam.log 2>&1 &
-          else
-            nohup ffmpeg -re -f lavfi -i "testsrc=size=1280x720:rate=30" -f v4l2 /dev/video0 > /tmp/ffmpeg_cam.log 2>&1 &
-          fi
-          sleep 2
 
       - name: Install Android SDK
         run: |
@@ -87,11 +64,17 @@ jobs:
           AVD_DIR=$(find "$HOME/.android" -maxdepth 4 -type d -name "android-cloud.avd" 2>/dev/null | head -1)
           [ -z "$AVD_DIR" ] && AVD_DIR="$ANDROID_AVD_HOME/android-cloud.avd" && mkdir -p "$AVD_DIR"
           printf '%s\n' \
-            'hw.ramSize=4096' 'hw.cpu.ncore=2' \
-            'hw.gpu.enabled=yes' 'hw.gpu.mode=swiftshader_indirect' \
-            'vm.heapSize=1024' 'hw.keyboard=yes' \
-            'hw.lcd.width=1080' 'hw.lcd.height=1920' 'hw.lcd.density=420' \
-            'hw.camera.back=webcam0' 'hw.camera.front=emulated' \\n            'disk.dataPartition.size=12G' \
+            'hw.ramSize=6144' \
+            'hw.cpu.ncore=2' \
+            'hw.gpu.enabled=yes' \
+            'hw.gpu.mode=swiftshader_indirect' \
+            'vm.heapSize=1024' \
+            'hw.keyboard=yes' \
+            'hw.lcd.width=1080' \
+            'hw.lcd.height=1920' \
+            'hw.lcd.density=420' \
+            'disk.dataPartition.size=16G' \
+            'net.shared_nets=*' \
             >> "$AVD_DIR/config.ini"
 
       - name: Checkout repo files
@@ -108,9 +91,8 @@ jobs:
           emulator -avd android-cloud \
             -no-audio -no-snapshot -no-boot-anim \
             -gpu swiftshader_indirect \
-            -memory 4096 -cores 2 -accel on \
+            -memory 6144 -cores 2 -accel on \
             -netdelay none -netspeed full \
-            -camera-back webcam0 -camera-front emulated \
             > /tmp/emu.log 2>&1 &
           EMULATOR_PID=$!
           echo "Waiting for ADB..."
@@ -128,15 +110,50 @@ jobs:
           adb shell input keyevent KEYCODE_WAKEUP
           adb shell wm size 1080x1920 || true
 
-      - name: Enable ADB over TCP
+      - name: Configure Internet + DNS
         run: |
+          adb shell settings put global airplane_mode_on 0 || true
+          adb shell svc wifi enable || true
+          adb shell svc data enable || true
+          adb shell setprop net.dns1 1.1.1.1 || true
+          adb shell setprop net.dns2 8.8.8.8 || true
+          adb shell setprop net.dns3 8.8.4.4 || true
           adb tcpip 5555
-          sleep 2
+          echo "Internet configured with fast DNS"
 
-      - name: Setup VNC
+      - name: Install Brave Browser
+        run: |
+          echo "Downloading Brave Browser..."
+          BRAVE_VER=$(curl -s https://api.github.com/repos/brave/brave-browser/releases/latest | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+          echo "Brave version: $BRAVE_VER"
+          wget -q "https://github.com/brave/brave-browser/releases/download/${BRAVE_VER}/BraveMonox86_64.apk" -O /tmp/brave.apk 2>/dev/null || \
+          wget -q "https://github.com/brave/brave-browser/releases/download/${BRAVE_VER}/Brave-Browser-x86_64.apk" -O /tmp/brave.apk 2>/dev/null || true
+          if [ -s /tmp/brave.apk ]; then
+            adb install -r /tmp/brave.apk && echo "Brave installed!" || echo "Brave install failed"
+          else
+            echo "Brave APK not found for this version, skipping"
+          fi
+
+      - name: Install 8 Ball Pool
+        run: |
+          echo "Downloading 8 Ball Pool..."
+          wget -q --user-agent "Mozilla/5.0 (Linux; Android 14)" \
+            "https://d.apkpure.com/b/APK/com.miniclip.eightballpool?version=latest" \
+            -O /tmp/8ball.apk 2>/dev/null || true
+          if [ -s /tmp/8ball.apk ] && [ $(wc -c < /tmp/8ball.apk) -gt 1000000 ]; then
+            adb install -r /tmp/8ball.apk && echo "8 Ball Pool installed!" || echo "8 Ball Pool install failed (ARM-only APK)"
+          else
+            echo "Trying alternate source..."
+            wget -q --user-agent "Mozilla/5.0 (Linux; Android 14)" \
+              "https://apkpure.com/8-ball-pool/com.miniclip.eightballpool/download" \
+              -O /tmp/8ball2.apk 2>/dev/null || true
+            adb install -r /tmp/8ball2.apk 2>/dev/null && echo "8 Ball Pool installed!" || echo "8 Ball Pool skipped"
+          fi
+
+      - name: Setup VNC + noVNC Browser
         run: |
           export DISPLAY=:99
-          sleep 3
+          sleep 2
           EMU_WIN=$(xdotool search --name "Android Emulator" 2>/dev/null | head -1 || true)
           [ -n "$EMU_WIN" ] && wmctrl -ir "$EMU_WIN" -b add,maximized_vert,maximized_horz || true
           mkdir -p ~/.vnc
@@ -153,30 +170,27 @@ jobs:
         run: |
           nohup node .github/scripts/tg-bot.js > /tmp/tg-bot.log 2>&1 &
           sleep 3
-          # تأكد أن البوت شغّال
           if pgrep -f "tg-bot.js" > /dev/null; then
-            echo "✅ Telegram bot is running"
+            echo "Telegram bot is running"
           else
-            echo "❌ Bot failed to start, logs:"
+            echo "Bot failed:"
             cat /tmp/tg-bot.log
           fi
 
       - name: Show Connection Info
         run: |
-          echo "============================================================"
-          echo "  Android 14 Cloud Ready!"
-          echo "============================================================"
+          echo "========================================================"
+          echo "  Android 14 Cloud Ready - 6GB RAM"
+          echo "========================================================"
           echo "  VNC Viewer : $TAILSCALE_IP:5900  |  Password: android1234"
           echo "  Browser    : http://$TAILSCALE_IP:6080/vnc.html"
-          echo "  Telegram   : بوت التحكم شغّال - أرسل /start"
           echo "  ADB        : adb connect $TAILSCALE_IP:5555"
-          echo "============================================================"
+          echo "========================================================"
 
       - name: Keep Alive
         run: |
           while true; do
-            echo "[$(date +%T)] active | VNC: $TAILSCALE_IP:5900 | Bot: running"
-            # إعادة تشغيل البوت إذا تعطّل
+            echo "[$(date +%T)] active | VNC: $TAILSCALE_IP:5900"
             if ! pgrep -f "tg-bot.js" > /dev/null; then
               echo "Bot crashed, restarting..."
               TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
