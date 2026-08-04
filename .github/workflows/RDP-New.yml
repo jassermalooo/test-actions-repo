@@ -1,0 +1,77 @@
+name: Windows RDP New
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-rdp:
+    runs-on: windows-2019
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure RDP Settings
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Rule" | Out-Null
+          netsh advfirewall firewall add rule name="RDP-Rule" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $cfgPath = "$env:TEMP\secpol.cfg"
+          $dbPath  = "$env:TEMP\secedit.sdb"
+          secedit /export /cfg $cfgPath
+          $content = Get-Content $cfgPath -Encoding Unicode
+          $content = $content -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0'
+          $content = $content -replace 'MinimumPasswordLength = \d+', 'MinimumPasswordLength = 0'
+          $content | Set-Content $cfgPath -Encoding Unicode
+          secedit /configure /db $dbPath /cfg $cfgPath /areas SECURITYPOLICY /quiet
+          gpupdate /force | Out-Null
+          net user RDP 12345 /add
+          net localgroup Administrators RDP /add
+          net localgroup "Remote Desktop Users" RDP /add
+          Write-Host "User: RDP | Password: 12345"
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $p = "$env:TEMP\ts.msi"
+          Invoke-WebRequest -Uri $url -OutFile $p -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i","`"$p`"","/quiet","/norestart" -Wait
+          Remove-Item $p -Force
+
+      - name: Connect Tailscale
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-new-$env:GITHUB_RUN_ID
+          $ip = $null
+          for ($i = 0; $i -lt 15; $i++) {
+            $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null) | Select-Object -First 1
+            if ($ip) { break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ip) { Write-Error 'Tailscale IP not assigned'; exit 1 }
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $ip"
+
+      - name: Send Connection Info to Telegram
+        shell: powershell
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.Tlgram }}
+        run: |
+          $ip = $env:TAILSCALE_IP
+          $msg = "Windows RDP Ready!%0AIP: ${ip}:3389%0AUser: RDP%0APass: 12345"
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=5653032481&text=$msg" -Method Get | Out-Null
+          Write-Host "Connection info sent to Telegram"
+
+      - name: Keep Alive
+        shell: powershell
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active | IP: $env:TAILSCALE_IP"
+            Start-Sleep -Seconds 60
+          }
