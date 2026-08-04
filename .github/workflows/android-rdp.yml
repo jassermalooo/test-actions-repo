@@ -20,12 +20,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            xfce4 xfce4-goodies \
+            xfce4 xfce4-goodies xfce4-session \
             xrdp \
+            dbus dbus-x11 \
             openjdk-17-jdk wget unzip \
-            xvfb dbus-x11 \
+            xvfb \
             nodejs npm
-          sudo systemctl enable xrdp
 
       - name: Create RDP User
         run: |
@@ -34,12 +34,48 @@ jobs:
           sudo usermod -aG sudo android
           echo "User: android | Password: android123"
 
-      - name: Configure xRDP to use XFCE
+      - name: Fix xRDP + XFCE Session (Unable to load failsafe session)
         run: |
-          echo "startxfce4" | sudo tee /home/android/.xsession
+          # Fix 1: Proper .xsession for android user
+          sudo tee /home/android/.xsession > /dev/null << 'EOF'
+#!/bin/bash
+export XDG_CONFIG_DIRS=/etc/xdg
+export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+exec startxfce4
+EOF
+          sudo chmod +x /home/android/.xsession
           sudo chown android:android /home/android/.xsession
-          sudo sed -i 's/port=3389/port=3389/' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/^test -x/# test -x/' /etc/xrdp/startwm.sh || true
+
+          # Fix 2: Override xrdp startwm.sh to launch XFCE directly
+          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
+#!/bin/sh
+export XDG_CONFIG_DIRS=/etc/xdg
+export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+exec startxfce4
+EOF
+          sudo chmod +x /etc/xrdp/startwm.sh
+
+          # Fix 3: Allow xRDP through polkit (fixes colord/authentication popups)
+          sudo mkdir -p /etc/polkit-1/localauthority/50-local.d
+          sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-xrdp.pkla > /dev/null << 'EOF'
+[Allow xRDP Users]
+Identity=unix-user:*
+Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+ResultAny=no
+ResultInactive=no
+ResultActive=yes
+EOF
+
+          # Fix 4: Ensure dbus is running before xrdp starts
+          sudo systemctl enable dbus
+          sudo systemctl start dbus
+          sleep 2
+
+          # Start xRDP
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+          sleep 3
+          sudo systemctl status xrdp | head -5
 
       - name: Install Android SDK
         run: |
@@ -101,12 +137,6 @@ jobs:
           done
           sudo -u android ANDROID_HOME=$ANDROID_HOME adb shell input keyevent KEYCODE_WAKEUP || true
 
-      - name: Start xRDP Service
-        run: |
-          sudo systemctl start xrdp
-          sleep 2
-          sudo systemctl status xrdp | head -5
-
       - name: Install Tailscale + Connect
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
@@ -123,11 +153,13 @@ jobs:
           TS_IP="${{ env.TAILSCALE_IP }}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -F chat_id=5653032481 \
-            -F "text=Android RDP Ready! IP: ${TS_IP}:3389 | User: android | Pass: android123" || true
+            -F "text=Android RDP Ready! IP: ${TS_IP} Port: 3389 | User: android | Pass: android123" || true
 
       - name: Keep Alive
         run: |
           while true; do
             echo "[$(date +%T)] active | IP: $TAILSCALE_IP"
+            # Restart xrdp if crashed
+            systemctl is-active --quiet xrdp || sudo systemctl restart xrdp
             sleep 60
           done
