@@ -18,7 +18,7 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Rule" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User
+      - name: Create RDP User with Admin Privileges
         shell: powershell
         run: |
           $cfgPath = "$env:TEMP\secpol.cfg"
@@ -33,14 +33,45 @@ jobs:
           net user RDP 12345 /add
           net localgroup Administrators RDP /add
           net localgroup "Remote Desktop Users" RDP /add
-          Write-Host "User: RDP | Password: 12345"
+          # Disable UAC elevation prompts so RDP user runs as full admin
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'ConsentPromptBehaviorAdmin' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'EnableLUA' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'PromptOnSecureDesktop' -Value 0 -Force
+          Write-Host "User: RDP | Password: 12345 | Admin: Full (UAC disabled)"
 
       - name: Install OBS Studio
         shell: powershell
         run: |
           Write-Host "Installing OBS Studio via Chocolatey..."
           choco install obs-studio -y --no-progress
-          Write-Host "OBS Studio installed successfully."
+          Write-Host "OBS Studio installed."
+
+      - name: Install Chrome and Set as Default Browser
+        shell: powershell
+        run: |
+          Write-Host "Installing Google Chrome..."
+          choco install googlechrome -y --no-progress
+          # Set Chrome as default browser via registry
+          $chromeProg = "ChromeHTML"
+          $assocPaths = @(
+            "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+            "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+            "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\ftp\UserChoice"
+          )
+          foreach ($path in $assocPaths) {
+            if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+            Set-ItemProperty -Path $path -Name "ProgId" -Value $chromeProg -Force
+          }
+          # Set Chrome for .html and .htm file associations
+          $extPaths = @(
+            "HKCU:\Software\Microsoft\Windows\Shell\Associations\FileAssociations\.html\UserChoice",
+            "HKCU:\Software\Microsoft\Windows\Shell\Associations\FileAssociations\.htm\UserChoice"
+          )
+          foreach ($path in $extPaths) {
+            if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+            Set-ItemProperty -Path $path -Name "ProgId" -Value $chromeProg -Force
+          }
+          Write-Host "Chrome installed and set as default browser."
 
       - name: Install Tailscale
         shell: powershell
@@ -70,11 +101,13 @@ jobs:
         run: |
           Write-Host "================================"
           Write-Host "RDP Ready!"
-          Write-Host "IP: $env:TAILSCALE_IP"
+          Write-Host "IP  : $env:TAILSCALE_IP"
           Write-Host "Port: 3389"
           Write-Host "User: RDP"
           Write-Host "Pass: 12345"
-          Write-Host "OBS: Installed"
+          Write-Host "OBS : Installed"
+          Write-Host "Browser: Chrome (Default)"
+          Write-Host "Admin: Full (no UAC prompts)"
           Write-Host "================================"
 
       - name: Keep Alive
