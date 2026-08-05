@@ -35,6 +35,18 @@ jobs:
           net localgroup "Remote Desktop Users" RDP /add
           Write-Host "User: RDP | Password: 12345"
 
+      - name: Install OBS Studio
+        shell: powershell
+        run: |
+          Write-Host "Downloading OBS Studio..."
+          $obsUrl = "https://github.com/obsproject/obs-studio/releases/download/31.0.3/OBS-Studio-31.0.3-Windows.exe"
+          $obsPath = "$env:TEMP\obs-installer.exe"
+          Invoke-WebRequest -Uri $obsUrl -OutFile $obsPath -UseBasicParsing
+          Write-Host "Installing OBS Studio silently..."
+          Start-Process -FilePath $obsPath -ArgumentList "/S" -Wait
+          Remove-Item $obsPath -Force
+          Write-Host "OBS Studio installed successfully."
+
       - name: Install Tailscale
         shell: powershell
         run: |
@@ -67,6 +79,7 @@ jobs:
           Write-Host "Port: 3389"
           Write-Host "User: RDP"
           Write-Host "Pass: 12345"
+          Write-Host "OBS: Installed"
           Write-Host "================================"
 
       - name: Keep Alive
