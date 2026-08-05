@@ -38,8 +38,8 @@ jobs:
       - name: Install OBS Studio
         shell: powershell
         run: |
-          Write-Host "Installing OBS Studio via winget..."
-          winget install --id OBS.OBSStudio -e --silent --accept-package-agreements --accept-source-agreements
+          Write-Host "Installing OBS Studio via Chocolatey..."
+          choco install obs-studio -y --no-progress
           Write-Host "OBS Studio installed successfully."
 
       - name: Install Tailscale
