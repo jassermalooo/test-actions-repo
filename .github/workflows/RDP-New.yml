@@ -38,13 +38,8 @@ jobs:
       - name: Install OBS Studio
         shell: powershell
         run: |
-          Write-Host "Downloading OBS Studio..."
-          $obsUrl = "https://github.com/obsproject/obs-studio/releases/download/31.0.3/OBS-Studio-31.0.3-Windows.exe"
-          $obsPath = "$env:TEMP\obs-installer.exe"
-          Invoke-WebRequest -Uri $obsUrl -OutFile $obsPath -UseBasicParsing
-          Write-Host "Installing OBS Studio silently..."
-          Start-Process -FilePath $obsPath -ArgumentList "/S" -Wait
-          Remove-Item $obsPath -Force
+          Write-Host "Installing OBS Studio via winget..."
+          winget install --id OBS.OBSStudio -e --silent --accept-package-agreements --accept-source-agreements
           Write-Host "OBS Studio installed successfully."
 
       - name: Install Tailscale
