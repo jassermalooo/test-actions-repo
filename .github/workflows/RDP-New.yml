@@ -64,6 +64,29 @@ jobs:
           $shortcut.Save()
           Write-Host "Kali Linux installed and shortcut created at $shortcutPath"
 
+      - name: Install Kali Linux Windows App and Desktop Shortcut
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Official Kali Linux application from the Microsoft Store via winget.
+          winget install --exact --id kalilinux.kalilinux --accept-source-agreements --accept-package-agreements --silent
+          Start-Sleep -Seconds 5
+          $app = Get-StartApps | Where-Object { $_.Name -eq "Kali Linux" } | Select-Object -First 1
+          if (-not $app) {
+            Write-Error "Kali Linux Windows application was not found after installation"
+            exit 1
+          }
+          $desktop = [Environment]::GetFolderPath("Desktop")
+          $shortcutPath = Join-Path $desktop "Kali Linux App.lnk"
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut($shortcutPath)
+          $shortcut.TargetPath = "$env:SystemRoot\explorer.exe"
+          $shortcut.Arguments = "shell:AppsFolder\$($app.AppID)"
+          $shortcut.WorkingDirectory = $desktop
+          $shortcut.Save()
+          Write-Host "Kali Linux app installed: $($app.AppID)"
+          Write-Host "Desktop shortcut created at $shortcutPath"
+
       - name: Install Tailscale
         shell: powershell
         run: |
