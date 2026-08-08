@@ -38,6 +38,32 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'PromptOnSecureDesktop' -Value 0 -Force
           Write-Host "User: RDP | Password: 12345 | Admin: Full (UAC disabled)"
 
+      - name: Install Latest Kali Linux WSL and Desktop Shortcut
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Install the current Kali rolling distribution from the official WSL source.
+          wsl.exe --update --web-download
+          if ((wsl.exe --list --quiet 2>$null) -notcontains "kali-linux") {
+            wsl.exe --install --distribution kali-linux --no-launch
+          }
+          wsl.exe --set-default-version 2
+          $distro = (wsl.exe --list --quiet 2>$null | Where-Object { $_.Trim() -eq "kali-linux" } | Select-Object -First 1)
+          if (-not $distro) {
+            Write-Error "Kali Linux was not installed"
+            exit 1
+          }
+          $desktop = [Environment]::GetFolderPath("Desktop")
+          $shortcutPath = Join-Path $desktop "Kali Linux.lnk"
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut($shortcutPath)
+          $shortcut.TargetPath = "$env:SystemRoot\System32\wsl.exe"
+          $shortcut.Arguments = "-d kali-linux"
+          $shortcut.WorkingDirectory = $desktop
+          $shortcut.IconLocation = "$env:SystemRoot\System32\wsl.exe,0"
+          $shortcut.Save()
+          Write-Host "Kali Linux installed and shortcut created at $shortcutPath"
+
       - name: Install Tailscale
         shell: powershell
         run: |
